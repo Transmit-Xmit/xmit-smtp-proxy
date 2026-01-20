@@ -1,0 +1,41 @@
+{
+  "name": "xmit-smtp",
+  "version": "1.0.0",
+  "description": "SMTP relay proxy for Transmit - send emails via SMTP using your Transmit API key",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint src/",
+    "test": "vitest"
+  },
+  "keywords": [
+    "smtp",
+    "email",
+    "relay",
+    "proxy",
+    "transmit",
+    "xmit"
+  ],
+  "author": "Transmit",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xmit-co/xmit-smtp"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "mailparser": "^3.7.1",
+    "smtp-server": "^3.13.6"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^22.10.0",
+    "@types/smtp-server": "^3.5.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
