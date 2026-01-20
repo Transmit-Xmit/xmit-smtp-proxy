@@ -189,7 +189,7 @@ setup_repo() {
         fi
 
         info "Cloning repository..."
-        git clone https://github.com/xmit-co/xmit-smtp.git "$INSTALL_DIR"
+        git clone https://github.com/Transmit-Xmit/xmit-smtp-proxy.git "$INSTALL_DIR"
         log "Repository cloned to $INSTALL_DIR"
     fi
 
