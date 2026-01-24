@@ -1193,12 +1193,18 @@ async function handleSelect(
         highestModSeq: status.highestModSeq,
     };
 
+    // TEMPORARY: Add offset to UIDVALIDITY to force clients to re-sync cached headers
+    // This invalidates client caches that stored empty headers from before the fix
+    // Can be removed after 2026-02-01 when all clients have re-synced
+    const uidValidityOffset = 1000000000;
+    const adjustedUidValidity = status.uidValidity + uidValidityOffset;
+
     const responses: ImapResponse[] = [
         { type: "untagged", data: `${status.exists} EXISTS` },
         { type: "untagged", data: `${status.recent} RECENT` },
         { type: "untagged", data: `FLAGS (${status.flags.join(" ")})` },
         { type: "untagged", data: `OK [PERMANENTFLAGS (${status.permanentFlags.join(" ")})]` },
-        { type: "untagged", data: `OK [UIDVALIDITY ${status.uidValidity}] UIDs valid` },
+        { type: "untagged", data: `OK [UIDVALIDITY ${adjustedUidValidity}] UIDs valid` },
         { type: "untagged", data: `OK [UIDNEXT ${status.uidNext}] Predicted next UID` },
     ];
 
