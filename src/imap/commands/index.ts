@@ -304,7 +304,11 @@ const handlers: Record<string, CommandHandler> = {
                     ? folder.name
                     : `${sender.email}/${folder.name}`;
 
-                if (matchesPattern(fullName, pattern)) {
+                const effectivePattern = reference && !pattern.startsWith("/")
+                    ? reference + pattern
+                    : pattern;
+
+                if (matchesPattern(fullName, effectivePattern)) {
                     const flags: string[] = [];
 
                     // Add special-use flags
@@ -356,7 +360,11 @@ const handlers: Record<string, CommandHandler> = {
                     ? folder.name
                     : `${sender.email}/${folder.name}`;
 
-                if (matchesPattern(fullName, pattern)) {
+                const effectivePattern = reference && !pattern.startsWith("/")
+                    ? reference + pattern
+                    : pattern;
+
+                if (matchesPattern(fullName, effectivePattern)) {
                     responses.push({
                         type: "untagged",
                         data: `LSUB () "/" "${fullName}"`,
@@ -377,7 +385,7 @@ const handlers: Record<string, CommandHandler> = {
     CREATE: async (session, command, api) => {
         const [mailboxName] = command.args;
 
-        if (!mailboxName) {
+        if (mailboxName === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -417,7 +425,7 @@ const handlers: Record<string, CommandHandler> = {
     DELETE: async (session, command, api) => {
         const [mailboxName] = command.args;
 
-        if (!mailboxName) {
+        if (mailboxName === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -455,7 +463,7 @@ const handlers: Record<string, CommandHandler> = {
     RENAME: async (session, command, api) => {
         const [oldName, newName] = command.args;
 
-        if (!oldName || !newName) {
+        if (oldName === undefined || newName === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -475,7 +483,7 @@ const handlers: Record<string, CommandHandler> = {
         // We treat all folders as subscribed, so this is a no-op
         const [mailboxName] = command.args;
 
-        if (!mailboxName) {
+        if (mailboxName === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -494,7 +502,7 @@ const handlers: Record<string, CommandHandler> = {
         // We treat all folders as subscribed, so this is a no-op
         const [mailboxName] = command.args;
 
-        if (!mailboxName) {
+        if (mailboxName === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -520,7 +528,7 @@ const handlers: Record<string, CommandHandler> = {
     STATUS: async (session, command, api) => {
         const [mailboxName, itemsStr] = command.args;
 
-        if (!mailboxName) {
+        if (mailboxName === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -636,8 +644,8 @@ const handlers: Record<string, CommandHandler> = {
         const uids = command.useUid
             ? parseSequenceSet(sequenceSet, folder.messageUids)
             : parseSequenceSet(sequenceSet, folder.messageUids.map((_, i) => i + 1))
-                  .map((seq) => folder.messageUids[seq - 1])
-                  .filter(Boolean);
+                .map((seq) => folder.messageUids[seq - 1])
+                .filter(Boolean);
 
         if (uids.length === 0) {
             return [{
@@ -759,8 +767,8 @@ const handlers: Record<string, CommandHandler> = {
         const uids = command.useUid
             ? parseSequenceSet(sequenceSet, folder.messageUids)
             : parseSequenceSet(sequenceSet, folder.messageUids.map((_, i) => i + 1))
-                  .map((seq) => folder.messageUids[seq - 1])
-                  .filter(Boolean);
+                .map((seq) => folder.messageUids[seq - 1])
+                .filter(Boolean);
 
         const responses: ImapResponse[] = [];
 
@@ -835,7 +843,7 @@ const handlers: Record<string, CommandHandler> = {
     COPY: async (session, command, api) => {
         const [sequenceSet, targetMailbox] = command.args;
 
-        if (!sequenceSet || !targetMailbox) {
+        if (!sequenceSet || targetMailbox === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -853,8 +861,8 @@ const handlers: Record<string, CommandHandler> = {
         const uids = command.useUid
             ? parseSequenceSet(sequenceSet, folder.messageUids)
             : parseSequenceSet(sequenceSet, folder.messageUids.map((_, i) => i + 1))
-                  .map((seq) => folder.messageUids[seq - 1])
-                  .filter(Boolean);
+                .map((seq) => folder.messageUids[seq - 1])
+                .filter(Boolean);
 
         const newUids: number[] = [];
 
@@ -883,7 +891,7 @@ const handlers: Record<string, CommandHandler> = {
     MOVE: async (session, command, api) => {
         const [sequenceSet, targetMailbox] = command.args;
 
-        if (!sequenceSet || !targetMailbox) {
+        if (!sequenceSet || targetMailbox === undefined) {
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -901,8 +909,8 @@ const handlers: Record<string, CommandHandler> = {
         const uids = command.useUid
             ? parseSequenceSet(sequenceSet, folder.messageUids)
             : parseSequenceSet(sequenceSet, folder.messageUids.map((_, i) => i + 1))
-                  .map((seq) => folder.messageUids[seq - 1])
-                  .filter(Boolean);
+                .map((seq) => folder.messageUids[seq - 1])
+                .filter(Boolean);
 
         const responses: ImapResponse[] = [];
         const newUids: number[] = [];
@@ -1133,7 +1141,7 @@ async function handleSelect(
 ): Promise<ImapResponse[]> {
     const [mailboxName] = command.args;
 
-    if (!mailboxName) {
+    if (mailboxName === undefined) {
         return [{
             tag: command.tag,
             status: "BAD",

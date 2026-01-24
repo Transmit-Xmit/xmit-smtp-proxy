@@ -213,7 +213,7 @@ function parseBodyItem(str: string): FetchItem {
  */
 export interface SearchCriterion {
     type: string;
-    value?: string | number;
+    value?: any;
     not?: boolean;
 }
 
@@ -245,8 +245,13 @@ export function parseSearchCriteria(args: string[]): SearchCriterion[] {
             case "TEXT":
             case "KEYWORD":
             case "UNKEYWORD":
-            case "HEADER":
                 criterion.value = args[++i];
+                break;
+            case "HEADER":
+                // HEADER takes 2 arguments: field-name and value
+                const field = args[++i];
+                const value = args[++i];
+                criterion.value = { field, value };
                 break;
             case "BEFORE":
             case "ON":

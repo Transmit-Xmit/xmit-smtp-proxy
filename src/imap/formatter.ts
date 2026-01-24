@@ -67,13 +67,13 @@ export function formatFetchResponse(
                     // Full body - return as RFC822 format
                     // Always return something even if body is empty
                     const rfc822 = buildRfc822Message(message);
-                    parts.push(`${sectionLabel} {${rfc822.length}}\r\n${rfc822}`);
+                    parts.push(`${sectionLabel} {${Buffer.byteLength(rfc822)}}\r\n${rfc822}`);
                 } else if (section === "HEADER") {
                     // All headers - use body.headers or build from envelope
                     const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
                     if (availableHeaders) {
                         const headers = formatHeaders(availableHeaders);
-                        parts.push(`${sectionLabel} {${headers.length}}\r\n${headers}`);
+                        parts.push(`${sectionLabel} {${Buffer.byteLength(headers)}}\r\n${headers}`);
                     } else {
                         parts.push(`${sectionLabel} {2}\r\n\r\n`);
                     }
@@ -96,7 +96,7 @@ export function formatFetchResponse(
                         }
 
                         const headers = formatHeaders(filteredHeaders);
-                        parts.push(`BODY[${item.section}] {${headers.length}}\r\n${headers}`);
+                        parts.push(`BODY[${item.section}] {${Buffer.byteLength(headers)}}\r\n${headers}`);
                     } else {
                         // No matching headers
                         parts.push(`BODY[${item.section}] {2}\r\n\r\n`);
@@ -104,11 +104,11 @@ export function formatFetchResponse(
                 } else if (section === "TEXT") {
                     // Body text only
                     const text = message.body?.text || message.body?.html || "";
-                    parts.push(`${sectionLabel} {${text.length}}\r\n${text}`);
+                    parts.push(`${sectionLabel} {${Buffer.byteLength(text)}}\r\n${text}`);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
                     // MIME part number (e.g., "1", "1.1", "2")
                     const content = message.body?.html || message.body?.text || "";
-                    parts.push(`${sectionLabel} {${content.length}}\r\n${content}`);
+                    parts.push(`${sectionLabel} {${Buffer.byteLength(content)}}\r\n${content}`);
                 } else {
                     // Unknown section - return empty
                     parts.push(`${sectionLabel} {0}\r\n`);
@@ -117,14 +117,14 @@ export function formatFetchResponse(
             case "RFC822":
                 if (message.body) {
                     const rfc822 = buildRfc822Message(message);
-                    parts.push(`RFC822 {${rfc822.length}}\r\n${rfc822}`);
+                    parts.push(`RFC822 {${Buffer.byteLength(rfc822)}}\r\n${rfc822}`);
                 }
                 break;
             case "RFC822.HEADER":
                 // Return just the headers (RFC 2822 format)
                 if (message.body?.headers) {
                     const headers = formatHeaders(message.body.headers);
-                    parts.push(`RFC822.HEADER {${headers.length}}\r\n${headers}`);
+                    parts.push(`RFC822.HEADER {${Buffer.byteLength(headers)}}\r\n${headers}`);
                 } else if (message.envelope) {
                     // Build minimal headers from envelope
                     const minHeaders: Record<string, string> = {};
@@ -140,7 +140,7 @@ export function formatFetchResponse(
                         minHeaders["Message-ID"] = `<${message.envelope.messageId}>`;
                     }
                     const headers = formatHeaders(minHeaders);
-                    parts.push(`RFC822.HEADER {${headers.length}}\r\n${headers}`);
+                    parts.push(`RFC822.HEADER {${Buffer.byteLength(headers)}}\r\n${headers}`);
                 } else {
                     parts.push(`RFC822.HEADER {2}\r\n\r\n`);
                 }
@@ -148,7 +148,7 @@ export function formatFetchResponse(
             case "RFC822.TEXT":
                 // Return just the body text
                 const bodyText = message.body?.text || message.body?.html || "";
-                parts.push(`RFC822.TEXT {${bodyText.length}}\r\n${bodyText}`);
+                parts.push(`RFC822.TEXT {${Buffer.byteLength(bodyText)}}\r\n${bodyText}`);
                 break;
         }
     }
@@ -444,7 +444,7 @@ function formatString(value: string): string {
     // Check if needs quoting
     if (/[\r\n"]/.test(value) || value.length > 100) {
         // Use literal
-        return `{${value.length}}\r\n${value}`;
+        return `{${Buffer.byteLength(value)}}\r\n${value}`;
     }
     return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }

@@ -71,16 +71,16 @@ export function createImapServer(
         // Send greeting
         socket.write("* OK [CAPABILITY IMAP4rev1 IDLE NAMESPACE UIDPLUS MOVE SPECIAL-USE] Transmit IMAP Ready\r\n");
 
-        let buffer = "";
+        let buffer = Buffer.alloc(0);
         let pendingLiteral: {
             command: string;
             size: number;
-            collected: string;
+            collected: Buffer;
             timeout?: NodeJS.Timeout;
         } | null = null;
 
         socket.on("data", async (data) => {
-            buffer += data.toString();
+            buffer = Buffer.concat([buffer, data]);
 
             // Security: Check buffer size to prevent memory exhaustion
             if (buffer.length > MAX_LINE_SIZE && !pendingLiteral) {
@@ -102,9 +102,11 @@ export function createImapServer(
                     }, LITERAL_TIMEOUT_MS);
                 }
                 const remaining = pendingLiteral.size - pendingLiteral.collected.length;
-                const chunk = buffer.slice(0, remaining);
-                pendingLiteral.collected += chunk;
-                buffer = buffer.slice(chunk.length);
+
+                // Take up to 'remaining' bytes
+                const chunk = buffer.subarray(0, remaining);
+                pendingLiteral.collected = Buffer.concat([pendingLiteral.collected, chunk]);
+                buffer = buffer.subarray(chunk.length);
 
                 // Check if we have all literal data
                 if (pendingLiteral.collected.length >= pendingLiteral.size) {
@@ -113,20 +115,75 @@ export function createImapServer(
                         clearTimeout(pendingLiteral.timeout);
                     }
 
-                    // Remove trailing CRLF after literal if present
+                    // Remove trailing CRLF after literal if present (checks the NEXT bytes in buffer)
+                    // Note: literal data is followed by CRLF if it was part of a line? 
+                    // No, usually literal is {N}\r\n<data>. The command continues?
+                    // Actually, if it's a non-synchronizing literal, or just an argument.
+                    // The command line parser expects the literal data to be attached.
+                    // But usually the client sends:
+                    // C: A01 APPEND "INBOX" {4}\r\n
+                    // S: + go ahead\r\n
+                    // C: test
+                    // C: \r\n
+                    // Wait. RFC 3501 says:
+                    // "The characters matching the N characters of the literal are treated as a single argument."
+                    // If the command is not synchronous, or if the literal is an argument.
+                    // The buffer logic here assumes the client sends exactly size bytes.
+                    // Does it send \r\n after?
+                    // Usually no, unless it's the end of line?
+                    // Example: C: LOGIN user {4}\r\npass
+                    // If 'pass' is 4 chars, the command ends there?
+                    // Actually, usually arguments are space separated.
+                    // LOGIN user {4}\r\npass
+                    // The 'buffer' handling logic below (original code) did:
+                    /*
                     if (buffer.startsWith("\r\n")) {
-                        buffer = buffer.slice(2);
+                         buffer = buffer.slice(2);
+                    }
+                    */
+                    // This implies it expects CRLF after literal?
+                    // Let's preserve that logic but use Buffer methods.
+                    // But wait, why would there be CRLF after literal unless it's end of command?
+                    // If I am appending a message: APPEND "box" {N}\r\n<data>\r\n  <- Wait, no.
+                    // APPEND "box" {N}\r\n<data>
+                    // Only IF <data> is the last arg, the request might end there?
+                    // But usually commands end with CRLF.
+                    // If literal is the last arg, does client send CRLF after data?
+                    // RFC 3501: "Every client command ... is terminated by a CRLF."
+                    // If the command ends with a literal:
+                    // C: A01 APPEND "box" {4}\r\nDATA
+                    // Does it send CRLF after DATA?
+                    // NO. The CRLF after {4} is the trigger for literal.
+                    // The command line effectively continues "through" the literal.
+                    // If DATA is the end of the line, then yes, possibly?
+                    // But usually: A01 LOGIN {3}\r\nfoo {3}\r\nbar\r\n
+                    // The literal "foo" is one arg. Literal "bar" is second?
+                    // The previous logic `if (buffer.startsWith("\r\n"))` handles the case where there is a newline?
+                    // Or maybe it was handling the newline that *preceded* the literal? No.
+                    // Let's assume the previous logic was trying to consume a newline that might appear?
+                    // Actually, checking `server.ts` line 117 (original):
+                    // `if (buffer.startsWith("\r\n")) buffer = buffer.slice(2);`
+                    // This was executed AFTER literal collection.
+                    // If the literal is followed by CRLF (end of command), this eats it.
+                    // If not (e.g. LOGIN {3}\r\nfoo {3}...), then there is a space?
+                    // Eating CRLF might merge lines?
+                    // Let's stick safe: Check for \r\n.
+                    // Buffer check:
+                    if (buffer.length >= 2 && buffer[0] === 0x0d && buffer[1] === 0x0a) {
+                        buffer = buffer.subarray(2);
                     }
 
                     // Process the complete command with literal
                     const line = pendingLiteral.command;
-                    const literalData = pendingLiteral.collected;
+                    // Convert collected buffer to string.
+                    // IMPORTANT: This resolves the framing issue, but keeps string internal API
+                    const literalData = pendingLiteral.collected.toString("utf8");
                     pendingLiteral = null;
 
                     try {
                         const command = parseCommand(line);
                         (command as any).literalData = literalData;
-                        logger.debug("imap", `< ${command.tag} ${command.name} [+${literalData.length} bytes]`);
+                        logger.debug("imap", `< ${command.tag} ${command.name} [+${literalData.length} chars, ${Buffer.byteLength(literalData)} bytes]`);
 
                         const responses = await handleCommand(session, command, apiClient, socket, config);
 
@@ -150,8 +207,8 @@ export function createImapServer(
             // Process complete lines (CRLF terminated)
             let lineEnd;
             while ((lineEnd = buffer.indexOf("\r\n")) !== -1) {
-                const line = buffer.slice(0, lineEnd);
-                buffer = buffer.slice(lineEnd + 2);
+                const line = buffer.subarray(0, lineEnd).toString("utf8");
+                buffer = buffer.subarray(lineEnd + 2);
 
                 // Handle IDLE termination
                 if (line.toUpperCase() === "DONE") {
@@ -191,7 +248,7 @@ export function createImapServer(
                     pendingLiteral = {
                         command: line.replace(/\{(\d+)\}\s*$/, ""),
                         size,
-                        collected: "",
+                        collected: Buffer.alloc(0),
                         timeout: setTimeout(() => {
                             logger.warn("imap", `Literal timeout from ${session.remoteAddress}`);
                             pendingLiteral = null;
@@ -202,24 +259,25 @@ export function createImapServer(
 
                     // Process any data already in buffer
                     if (buffer.length > 0) {
-                        const chunk = buffer.slice(0, size);
-                        pendingLiteral.collected += chunk;
-                        buffer = buffer.slice(chunk.length);
+                        const remaining = size;
+                        const chunk = buffer.subarray(0, remaining);
+                        pendingLiteral.collected = Buffer.concat([pendingLiteral.collected, chunk]);
+                        buffer = buffer.subarray(chunk.length);
 
                         if (pendingLiteral.collected.length >= size) {
                             // Remove trailing CRLF after literal if present
-                            if (buffer.startsWith("\r\n")) {
-                                buffer = buffer.slice(2);
+                            if (buffer.length >= 2 && buffer[0] === 0x0d && buffer[1] === 0x0a) {
+                                buffer = buffer.subarray(2);
                             }
 
                             // Process immediately
-                            const literalData = pendingLiteral.collected;
+                            const literalData = pendingLiteral.collected.toString("utf8");
                             pendingLiteral = null;
 
                             try {
                                 const command = parseCommand(line.replace(/\{(\d+)\}\s*$/, ""));
                                 (command as any).literalData = literalData;
-                                logger.debug("imap", `< ${command.tag} ${command.name} [+${literalData.length} bytes]`);
+                                logger.debug("imap", `< ${command.tag} ${command.name} [+${literalData.length} chars]`);
 
                                 const responses = await handleCommand(session, command, apiClient, socket, config);
 
