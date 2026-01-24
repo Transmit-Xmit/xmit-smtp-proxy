@@ -59,6 +59,7 @@ export function formatFetchResponse(
             case "BODY":
                 const section = item.section?.toUpperCase() || "";
                 const sectionLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
+                console.log(`[IMAP BODY] Section: "${section}", peek: ${item.peek}, hasBody: ${!!message.body}`);
 
                 if (section === "" || section === undefined) {
                     // Full body - return as RFC822 format
@@ -95,8 +96,9 @@ export function formatFetchResponse(
                     parts.push(`${sectionLabel} {${text.length}}\r\n${text}`);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
                     // MIME part number (e.g., "1", "1.1", "2")
-                    // For now, return the HTML or text content
+                    console.log(`[IMAP BODY] MIME part ${section}, bodyHtml: ${message.body?.html?.length || 0}, bodyText: ${message.body?.text?.length || 0}`);
                     const content = message.body?.html || message.body?.text || "";
+                    console.log(`[IMAP BODY] Returning ${content.length} bytes for BODY[${item.section}]`);
                     parts.push(`${sectionLabel} {${content.length}}\r\n${content}`);
                 } else {
                     // Unknown section - return empty
