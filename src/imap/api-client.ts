@@ -228,7 +228,7 @@ export class ImapApiClient {
         folderName: string,
         options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
     ): Promise<MailboxMessage[]> {
-        // For UID-specific queries, try to serve from per-message cache
+        // For UID-specific queries without limit/offset, try per-message cache
         if (this.cache && options.uids?.length && !options.limit && !options.offset) {
             const cached: MailboxMessage[] = [];
             const missingUids: number[] = [];
@@ -243,22 +243,25 @@ export class ImapApiClient {
                 }
             }
 
-            // All UIDs found in cache
+            // All UIDs found in cache - return cached messages
             if (missingUids.length === 0) {
                 this.logger.debug("imap-api", `Cache hit: ${cached.length} messages from ${folderName}`);
                 return cached;
             }
 
-            // Fetch only missing UIDs
+            // Partial cache hit - fetch only missing UIDs
             if (cached.length > 0) {
                 this.logger.debug("imap-api", `Partial cache: ${cached.length} hit, ${missingUids.length} miss`);
-                const fetched = await this.fetchMessages(apiKey, senderId, folderName, missingUids);
+                const fetched = await this.fetchMessages(apiKey, senderId, folderName, {
+                    uids: missingUids,
+                    fields: options.fields,
+                });
                 return [...cached, ...fetched];
             }
         }
 
-        // Full fetch (no UIDs specified, or first-time fetch)
-        return this.fetchMessages(apiKey, senderId, folderName, options.uids, options.limit, options.offset);
+        // Full fetch - pass all options through
+        return this.fetchMessages(apiKey, senderId, folderName, options);
     }
 
     /**
@@ -268,16 +271,14 @@ export class ImapApiClient {
         apiKey: string,
         senderId: string,
         folderName: string,
-        uids?: number[],
-        limit?: number,
-        offset?: number
+        options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
     ): Promise<MailboxMessage[]> {
         try {
             const params = new URLSearchParams();
-            if (uids?.length) params.set("uids", uids.join(","));
-            // Always fetch all fields for caching (API returns full objects anyway)
-            if (limit) params.set("limit", limit.toString());
-            if (offset) params.set("offset", offset.toString());
+            if (options.uids?.length) params.set("uids", options.uids.join(","));
+            if (options.fields?.length) params.set("fields", options.fields.join(","));
+            if (options.limit) params.set("limit", options.limit.toString());
+            if (options.offset) params.set("offset", options.offset.toString());
 
             const res = await this.fetch(
                 apiKey,
@@ -288,8 +289,9 @@ export class ImapApiClient {
             const data = await res.json() as { messages: MailboxMessage[] };
             const messages = data.messages || [];
 
-            // Cache each message individually for better hit rates
-            if (this.cache) {
+            // Cache each message individually (only if we got full message objects)
+            // Don't cache if only specific fields were requested
+            if (this.cache && (!options.fields || options.fields.length > 3)) {
                 for (const msg of messages) {
                     if (msg.uid) {
                         const msgKey = cacheKey("msg", senderId, folderName, msg.uid);
