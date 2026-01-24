@@ -81,9 +81,8 @@ export class CacheManager {
         // Memory cache patterns (use $ or : after senderId to prevent prefix collisions)
         this.memory.deletePattern(`^folders:${senderId}$`);
         this.memory.deletePattern(`^status:${senderId}:`);
-        this.memory.deletePattern(`^messages:${senderId}:`);
+        this.memory.deletePattern(`^msgs:${senderId}:`);   // Query-level message cache
         this.memory.deletePattern(`^message:${senderId}:`);
-        this.memory.deletePattern(`^msg:${senderId}:`);  // Per-message cache
         this.memory.deletePattern(`^sender:`);  // Clear all sender caches
 
         // Persistent cache patterns (SQL LIKE)
@@ -97,11 +96,10 @@ export class CacheManager {
      */
     invalidateFolder(senderId: string, folderName: string): void {
         const folderKey = `${senderId}:${folderName}`;
-        // Use $ to match exact key or : to match keys with more segments
+        // Use regex patterns to match cache keys
         this.memory.deletePattern(`^status:${folderKey}$`);
-        this.memory.deletePattern(`^messages:${folderKey}`);
+        this.memory.deletePattern(`^msgs:${folderKey}`);   // Query-level message cache
         this.memory.deletePattern(`^message:${folderKey}:`);
-        this.memory.deletePattern(`^msg:${folderKey}:`);  // Per-message cache
         this.persistent.deletePattern(`body:${folderKey}:%`);
 
         // Also invalidate the folder list
@@ -116,9 +114,10 @@ export class CacheManager {
     invalidateMessage(senderId: string, folderName: string, uid: number): void {
         // Delete the specific message and its body
         this.memory.delete(cacheKey("message", senderId, folderName, uid));
-        this.memory.delete(cacheKey("msg", senderId, folderName, uid));  // Per-message cache
         this.persistent.delete(cacheKey("body", senderId, folderName, uid));
 
+        // Invalidate all query caches for this folder (message count changed)
+        this.memory.deletePattern(`^msgs:${senderId}:${folderName}`);
         // Invalidate folder status (counts may have changed)
         this.memory.delete(cacheKey("status", senderId, folderName));
     }

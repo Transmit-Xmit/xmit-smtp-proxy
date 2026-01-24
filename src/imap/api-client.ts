@@ -220,7 +220,7 @@ export class ImapApiClient {
 
     /**
      * List messages in a folder
-     * Uses per-message caching for better hit rates across different field requests
+     * Uses query-level caching for full folder fetches
      */
     async listMessages(
         apiKey: string,
@@ -228,51 +228,23 @@ export class ImapApiClient {
         folderName: string,
         options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
     ): Promise<MailboxMessage[]> {
-        // For UID-specific queries without limit/offset, try per-message cache
-        if (this.cache && options.uids?.length && !options.limit && !options.offset) {
-            const cached: MailboxMessage[] = [];
-            const missingUids: number[] = [];
+        // Build cache key from all parameters
+        const keyParts = [senderId, folderName];
+        if (options.uids?.length) keyParts.push(`u:${options.uids.sort((a,b) => a-b).join(",")}`);
+        if (options.fields?.length) keyParts.push(`f:${options.fields.sort().join(",")}`);
+        if (options.limit) keyParts.push(`l:${options.limit}`);
+        if (options.offset) keyParts.push(`o:${options.offset}`);
+        const key = cacheKey("msgs", ...keyParts);
 
-            for (const uid of options.uids) {
-                const msgKey = cacheKey("msg", senderId, folderName, uid);
-                const msg = this.cache.memory.get(msgKey) as MailboxMessage | undefined;
-                if (msg) {
-                    cached.push(msg);
-                } else {
-                    missingUids.push(uid);
-                }
-            }
-
-            // All UIDs found in cache - return cached messages
-            if (missingUids.length === 0) {
-                this.logger.debug("imap-api", `Cache hit: ${cached.length} messages from ${folderName}`);
+        // Check cache
+        if (this.cache) {
+            const cached = this.cache.memory.get(key) as MailboxMessage[] | undefined;
+            if (cached) {
+                this.logger.debug("imap-api", `Cache hit: ${key}`);
                 return cached;
-            }
-
-            // Partial cache hit - fetch only missing UIDs
-            if (cached.length > 0) {
-                this.logger.debug("imap-api", `Partial cache: ${cached.length} hit, ${missingUids.length} miss`);
-                const fetched = await this.fetchMessages(apiKey, senderId, folderName, {
-                    uids: missingUids,
-                    fields: options.fields,
-                });
-                return [...cached, ...fetched];
             }
         }
 
-        // Full fetch - pass all options through
-        return this.fetchMessages(apiKey, senderId, folderName, options);
-    }
-
-    /**
-     * Internal: fetch messages from API and cache them individually
-     */
-    private async fetchMessages(
-        apiKey: string,
-        senderId: string,
-        folderName: string,
-        options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
-    ): Promise<MailboxMessage[]> {
         try {
             const params = new URLSearchParams();
             if (options.uids?.length) params.set("uids", options.uids.join(","));
@@ -289,15 +261,10 @@ export class ImapApiClient {
             const data = await res.json() as { messages: MailboxMessage[] };
             const messages = data.messages || [];
 
-            // Cache each message individually (only if we got full message objects)
-            // Don't cache if only specific fields were requested
-            if (this.cache && (!options.fields || options.fields.length > 3)) {
-                for (const msg of messages) {
-                    if (msg.uid) {
-                        const msgKey = cacheKey("msg", senderId, folderName, msg.uid);
-                        this.cache.memory.set(msgKey, msg, CacheTtl.MESSAGES);
-                    }
-                }
+            // Cache the query result
+            if (this.cache && messages.length >= 0) {
+                this.cache.memory.set(key, messages, CacheTtl.MESSAGES);
+                this.logger.debug("imap-api", `Cached: ${key} (${messages.length} msgs)`);
             }
 
             return messages;
