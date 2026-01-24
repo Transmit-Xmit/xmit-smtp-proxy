@@ -210,13 +210,17 @@ build_app() {
     pnpm install --frozen-lockfile > /dev/null 2>&1 || pnpm install > /dev/null 2>&1
 
     # Build native modules (better-sqlite3 requires compilation)
-    info "Building native modules..."
-    cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 2>/dev/null && \
-        npm run build-release > /dev/null 2>&1 && \
-        cd "$INSTALL_DIR" || {
-        warn "Native module build skipped (may not be needed)"
+    SQLITE_DIR=$(find node_modules/.pnpm -type d -name "better-sqlite3" -path "*/node_modules/better-sqlite3" 2>/dev/null | head -1)
+    if [ -n "$SQLITE_DIR" ] && [ -f "$SQLITE_DIR/binding.gyp" ]; then
+        info "Building native modules (better-sqlite3)..."
+        cd "$SQLITE_DIR"
+        if npm run build-release > /dev/null 2>&1; then
+            log "Native module built successfully"
+        else
+            warn "Native module build failed - may need build-essential"
+        fi
         cd "$INSTALL_DIR"
-    }
+    fi
 
     info "Building application..."
     pnpm build
@@ -369,6 +373,36 @@ setup_pm2() {
 }
 
 #------------------------------------------------------------------------------
+# Setup convenience aliases for other users
+#------------------------------------------------------------------------------
+setup_aliases() {
+    local alias_line="alias pm2='sudo -u $SERVICE_USER pm2'"
+
+    # Add alias for all users with a home directory
+    for user_home in /home/*; do
+        if [ -d "$user_home" ]; then
+            local bashrc="$user_home/.bashrc"
+            local username=$(basename "$user_home")
+
+            # Skip the service user
+            if [ "$username" = "$SERVICE_USER" ]; then
+                continue
+            fi
+
+            # Add alias if not already present
+            if [ -f "$bashrc" ] && ! grep -q "alias pm2=" "$bashrc" 2>/dev/null; then
+                echo "" >> "$bashrc"
+                echo "# PM2 alias to run as $SERVICE_USER (added by xmit-mail deploy)" >> "$bashrc"
+                echo "$alias_line" >> "$bashrc"
+                info "Added pm2 alias for user: $username"
+            fi
+        fi
+    done
+
+    log "PM2 aliases configured (run 'source ~/.bashrc' or reconnect)"
+}
+
+#------------------------------------------------------------------------------
 # Print status
 #------------------------------------------------------------------------------
 print_status() {
@@ -464,6 +498,7 @@ main() {
     setup_firewall "$SMTP_PORT" "$IMAP_PORT"
     create_env "$DOMAIN" "$SMTP_PORT" "$IMAP_PORT" "$API_BASE"
     setup_pm2 "$SMTP_PORT" "$IMAP_PORT"
+    setup_aliases
 
     print_status "$DOMAIN" "$SMTP_PORT" "$IMAP_PORT"
 }
