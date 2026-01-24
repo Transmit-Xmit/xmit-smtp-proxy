@@ -394,6 +394,48 @@ export class ImapApiClient {
     }
 
     /**
+     * Append a message to a folder
+     */
+    async appendMessage(
+        apiKey: string,
+        senderId: string,
+        folderName: string,
+        message: string,
+        flags?: string[],
+        internalDate?: Date
+    ): Promise<{ uid: number } | null> {
+        try {
+            const res = await fetch(
+                `${this.apiBase}/api/mailbox/${senderId}/folders/${encodeURIComponent(folderName)}/append`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        "Content-Type": "application/json",
+                        "User-Agent": "xmit-imap/1.0",
+                    },
+                    body: JSON.stringify({
+                        message,
+                        flags,
+                        internalDate: internalDate?.toISOString(),
+                    }),
+                }
+            );
+
+            if (!res.ok) {
+                this.logger.error("imap-api", `Append failed: ${res.status}`);
+                return null;
+            }
+
+            const data = await res.json() as { uid: number };
+            return data;
+        } catch (error) {
+            this.logger.error("imap-api", `Append error: ${error}`);
+            return null;
+        }
+    }
+
+    /**
      * Prune expired cache entries
      */
     pruneCache(): number {

@@ -80,6 +80,9 @@ function validateState(session: ImapSession, command: string): string | null {
         return "No mailbox selected";
     }
 
+    // APPEND just requires authenticated state (which is already checked above)
+    // It doesn't require a selected mailbox
+
     return null;
 }
 
@@ -606,6 +609,83 @@ const handlers: Record<string, CommandHandler> = {
         }];
     },
 
+    APPEND: async (session, command, api) => {
+        // APPEND mailbox [flags] [date-time] literal
+        // The literal data should be in command.literalData (set by server)
+        const args = command.args;
+
+        if (args.length < 1) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "APPEND requires mailbox name",
+            }];
+        }
+
+        const mailboxName = args[0];
+        let flags: string[] | undefined;
+        let internalDate: Date | undefined;
+
+        // Parse optional flags and date
+        for (let i = 1; i < args.length; i++) {
+            const arg = args[i];
+            if (arg.startsWith("(") && arg.endsWith(")")) {
+                // Flags like (\Seen \Draft)
+                flags = arg.slice(1, -1).split(/\s+/).filter(Boolean);
+            } else if (arg.match(/^\d{1,2}-\w{3}-\d{4}/)) {
+                // Date like "24-Jan-2026 20:30:00 +0000"
+                internalDate = parseImapDate(arg);
+            }
+        }
+
+        // Get literal data
+        const literalData = (command as any).literalData as string | undefined;
+        if (!literalData) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "APPEND requires message data",
+            }];
+        }
+
+        // Resolve mailbox
+        const { senderId, folderName } = await resolveMailbox(session, mailboxName, api);
+
+        if (!senderId) {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                code: "TRYCREATE",
+                message: "Mailbox does not exist",
+            }];
+        }
+
+        // Append message via API
+        const result = await api.appendMessage(
+            session.apiKey!,
+            senderId,
+            folderName,
+            literalData,
+            flags,
+            internalDate
+        );
+
+        if (!result) {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Failed to append message",
+            }];
+        }
+
+        return [{
+            tag: command.tag,
+            status: "OK",
+            code: `APPENDUID ${Date.now()} ${result.uid}`,
+            message: "APPEND completed",
+        }];
+    },
+
     IDLE: async (session, command, api, socket, config) => {
         session.idling = true;
         session.idleTag = command.tag;
@@ -805,4 +885,45 @@ function matchesPattern(name: string, pattern: string): boolean {
         .replace(/%/g, "[^/]*");
 
     return new RegExp(`^${regex}$`).test(name);
+}
+
+/**
+ * Parse IMAP date format (e.g., "24-Jan-2026 20:30:00 +0000")
+ */
+function parseImapDate(dateStr: string): Date | undefined {
+    // Remove quotes if present
+    const clean = dateStr.replace(/^"|"$/g, "");
+
+    // IMAP date format: DD-Mon-YYYY HH:MM:SS +ZZZZ
+    const months: Record<string, number> = {
+        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+    };
+
+    const match = clean.match(/^(\d{1,2})-(\w{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*([+-]\d{4})?$/);
+    if (!match) {
+        return undefined;
+    }
+
+    const [, day, mon, year, hour, min, sec, tz] = match;
+    const month = months[mon];
+    if (month === undefined) return undefined;
+
+    const date = new Date(Date.UTC(
+        parseInt(year),
+        month,
+        parseInt(day),
+        parseInt(hour),
+        parseInt(min),
+        parseInt(sec)
+    ));
+
+    // Adjust for timezone if provided
+    if (tz) {
+        const tzHours = parseInt(tz.slice(0, 3));
+        const tzMins = parseInt(tz.slice(0, 1) + tz.slice(3));
+        date.setUTCMinutes(date.getUTCMinutes() - (tzHours * 60 + tzMins));
+    }
+
+    return date;
 }
