@@ -81,6 +81,7 @@ export function formatFetchResponse(
                         label += `<${validStart}>`;
                     }
 
+                    // CRITICAL: Use proper CRLF, not escaped literal string
                     parts.push(`${label} {${Buffer.byteLength(finalContent)}}\r\n${finalContent}`);
                 };
 
@@ -88,16 +89,18 @@ export function formatFetchResponse(
 
                 if (section === "" || section === undefined) {
                     // Full body
+                    // If we have raw body stored, use it. Otherwise attempt to reconstruct.
+                    // For now, reconstruct as before but keep it simple.
                     const rfc822 = buildRfc822Message(message);
                     processContent(rfc822, baseLabel);
                 } else if (section === "HEADER") {
                     // All headers
                     const rfc822 = buildRfc822Message(message);
                     const headerEnd = rfc822.indexOf("\r\n\r\n");
-                    const headers = headerEnd !== -1 ? rfc822.slice(0, headerEnd + 4) : rfc822; // Keep the empty line
+                    const headers = headerEnd !== -1 ? rfc822.slice(0, headerEnd + 4) : rfc822;
                     processContent(headers, baseLabel);
                 } else if (section.startsWith("HEADER.FIELDS")) {
-                    // Specific headers
+                    // Specific headers logic (unchanged)
                     const fieldMatch = section.match(/HEADER\.FIELDS\s*\(([^)]+)\)/i);
                     if (fieldMatch) {
                         const requestedFields = fieldMatch[1].toLowerCase().split(/\s+/);
@@ -118,22 +121,22 @@ export function formatFetchResponse(
                         processContent("", `BODY[${item.section}]`);
                     }
                 } else if (section === "TEXT") {
-                    // Body text only (RFC: everything after the first empty line of the RFC822 message)
+                    // RFC 3501: BODY[TEXT] is the text part of the message.
+                    // If multipart, it's the body structure excluding the main header.
+                    // If single part, it's the content.
+
                     const rfc822 = buildRfc822Message(message);
                     const headerEnd = rfc822.indexOf("\r\n\r\n");
                     const text = headerEnd !== -1 ? rfc822.slice(headerEnd + 4) : "";
                     processContent(text, baseLabel);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
-                    // MIME part - simplistic fallback for now
-                    // TODO: Implement proper MIME structure traversal to find the exact part
-                    // For now, if they ask for "1" give text, "2" give html if multipart
-                    // This is hacky but better than nothing
+                    // MIME part fetching
+                    // 1 = Text, 2 = HTML (simplified assumption based on our buildRfc822Message)
                     if (message.body?.text && message.body?.html) {
                         if (section === "1") processContent(message.body.text, baseLabel);
                         else if (section === "2") processContent(message.body.html, baseLabel);
                         else processContent("", baseLabel);
                     } else {
-                        // Single part, "1" is the whole text
                         const content = message.body?.html || message.body?.text || "";
                         if (section === "1") processContent(content, baseLabel);
                         else processContent("", baseLabel);
@@ -155,19 +158,7 @@ export function formatFetchResponse(
                     const headers = formatHeaders(message.body.headers);
                     parts.push(`RFC822.HEADER {${Buffer.byteLength(headers)}}\r\n${headers}`);
                 } else if (message.envelope) {
-                    // Build minimal headers from envelope
-                    const minHeaders: Record<string, string> = {};
-                    if (message.envelope.date) minHeaders["Date"] = message.envelope.date;
-                    if (message.envelope.subject) minHeaders["Subject"] = message.envelope.subject;
-                    if (message.envelope.from?.length) {
-                        const from = message.envelope.from[0];
-                        minHeaders["From"] = from.name
-                            ? `${from.name} <${from.mailbox}@${from.host}>`
-                            : `${from.mailbox}@${from.host}`;
-                    }
-                    if (message.envelope.messageId) {
-                        minHeaders["Message-ID"] = `<${message.envelope.messageId}>`;
-                    }
+                    const minHeaders = buildHeadersFromEnvelope(message.envelope) || {};
                     const headers = formatHeaders(minHeaders);
                     parts.push(`RFC822.HEADER {${Buffer.byteLength(headers)}}\r\n${headers}`);
                 } else {
@@ -175,8 +166,12 @@ export function formatFetchResponse(
                 }
                 break;
             case "RFC822.TEXT":
-                // Return just the body text
-                const bodyText = message.body?.text || message.body?.html || "";
+                // Return just the body text (content only, no headers)
+                // This seems redundant with BODY[TEXT] but strict RFC822.TEXT definition roughly matches.
+                // We'll use the same extraction logic.
+                const fullMsg = buildRfc822Message(message);
+                const hdrEnd = fullMsg.indexOf("\r\n\r\n");
+                const bodyText = hdrEnd !== -1 ? fullMsg.slice(hdrEnd + 4) : "";
                 parts.push(`RFC822.TEXT {${Buffer.byteLength(bodyText)}}\r\n${bodyText}`);
                 break;
         }
@@ -190,13 +185,13 @@ export function formatFetchResponse(
  */
 function buildRfc822Message(message: MailboxMessage): string {
     const lines: string[] = [];
-    const boundary = "boundary_" + message.uid + "_" + Date.now().toString(36);
+    const boundary = "----=_Part_" + message.uid + "_xmit";
     const hasText = !!message.body?.text;
     const hasHtml = !!message.body?.html;
     const isMultipart = hasText && hasHtml;
 
     // Add headers - prefer body.headers, fallback to envelope
-    const headers = message.body?.headers || (message.envelope ? buildHeadersFromEnvelope(message.envelope) : {}) || {};
+    const headers = message.body?.headers || buildHeadersFromEnvelope(message.envelope) || {};
 
     for (const [key, value] of Object.entries(headers)) {
         // Skip Content-Type if we are generating it
@@ -222,23 +217,30 @@ function buildRfc822Message(message: MailboxMessage): string {
         lines.push(`--${boundary}`);
         lines.push("Content-Type: text/plain; charset=utf-8");
         lines.push("");
-        lines.push(message.body!.text || "");
+        lines.push(ensureCrlf(message.body!.text || ""));
 
         // HTML part
         lines.push(`--${boundary}`);
         lines.push("Content-Type: text/html; charset=utf-8");
         lines.push("");
-        lines.push(message.body!.html || "");
+        lines.push(ensureCrlf(message.body!.html || ""));
 
         // End boundary
         lines.push(`--${boundary}--`);
     } else if (hasHtml) {
-        lines.push(message.body?.html || "");
+        lines.push(ensureCrlf(message.body?.html || ""));
     } else {
-        lines.push(message.body?.text || "");
+        lines.push(ensureCrlf(message.body?.text || ""));
     }
 
     return lines.join("\r\n");
+}
+
+/**
+ * Ensure string uses CRLF line endings
+ */
+function ensureCrlf(text: string): string {
+    return text.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
 }
 
 /**
