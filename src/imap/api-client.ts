@@ -227,11 +227,19 @@ export class ImapApiClient {
         folderName: string,
         options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
     ): Promise<MailboxMessage[]> {
-        // Only cache full list (no filters) for consistency
-        const isCacheable = !options.uids?.length && !options.limit && !options.offset;
-        const key = cacheKey("messages", senderId, folderName);
+        // Build cache key including query params for accurate caching
+        const queryParts: string[] = [];
+        if (options.uids?.length) queryParts.push(`u:${options.uids.sort().join(",")}`);
+        if (options.fields?.length) queryParts.push(`f:${options.fields.sort().join(",")}`);
+        if (options.limit) queryParts.push(`l:${options.limit}`);
+        if (options.offset) queryParts.push(`o:${options.offset}`);
 
-        if (isCacheable && this.cache) {
+        const key = queryParts.length > 0
+            ? cacheKey("messages", senderId, folderName, queryParts.join("|"))
+            : cacheKey("messages", senderId, folderName);
+
+        // Check cache
+        if (this.cache) {
             const cached = this.cache.memory.get(key) as MailboxMessage[] | undefined;
             if (cached) return cached;
         }
@@ -252,8 +260,8 @@ export class ImapApiClient {
             const data = await res.json() as { messages: MailboxMessage[] };
             const messages = data.messages || [];
 
-            // Cache full list
-            if (isCacheable && this.cache && messages.length > 0) {
+            // Cache results
+            if (this.cache && messages.length > 0) {
                 this.cache.memory.set(key, messages, CacheTtl.MESSAGES);
             }
 

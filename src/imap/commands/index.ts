@@ -1119,8 +1119,8 @@ async function handleSelect(
         }];
     }
 
-    // Trigger sync first
-    await api.syncMailbox(session.apiKey!, senderId);
+    // Note: We no longer sync on every SELECT - it invalidates caches.
+    // Sync happens on NOOP or CHECK if needed, or via inbound webhook.
 
     // Get folder status
     const status = await api.getFolderStatus(session.apiKey!, senderId, folderName);
