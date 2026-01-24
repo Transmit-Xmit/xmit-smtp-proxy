@@ -238,7 +238,12 @@ export function createImapServer(
 
                 try {
                     const command = parseCommand(line);
-                    logger.info("imap", `< ${command.tag} ${command.name}`);
+                    // Log full command for debugging SELECT issues
+                    if (command.name === "SELECT" || command.name === "EXAMINE") {
+                        logger.info("imap", `< ${command.tag} ${command.name} [${command.args.join("|")}] raw="${line}"`);
+                    } else {
+                        logger.info("imap", `< ${command.tag} ${command.name}`);
+                    }
 
                     const responses = await handleCommand(session, command, apiClient, socket, config);
 
