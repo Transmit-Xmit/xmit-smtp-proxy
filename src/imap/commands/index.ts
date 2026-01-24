@@ -322,10 +322,14 @@ const handlers: Record<string, CommandHandler> = {
 
     // Message operations
     FETCH: async (session, command, api) => {
-        console.log("[IMAP FETCH] Starting FETCH command");
+        console.log("[IMAP FETCH] === Starting FETCH ===");
+        console.log("[IMAP FETCH] Args:", command.args);
+        console.log("[IMAP FETCH] useUid:", command.useUid);
+
         const [sequenceSet, itemsStr] = command.args;
 
         if (!sequenceSet || !itemsStr) {
+            console.log("[IMAP FETCH] ERROR: Missing sequence set or items");
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -333,8 +337,17 @@ const handlers: Record<string, CommandHandler> = {
             }];
         }
 
-        const folder = session.selectedFolder!;
-        console.log("[IMAP FETCH] Folder:", folder?.name, "UIDs in cache:", folder?.messageUids?.length);
+        const folder = session.selectedFolder;
+        if (!folder) {
+            console.log("[IMAP FETCH] ERROR: No folder selected!");
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "No folder selected",
+            }];
+        }
+
+        console.log("[IMAP FETCH] Folder:", folder.name, "UIDs:", folder.messageUids);
         const items = parseFetchItems(itemsStr);
         console.log("[IMAP FETCH] Parsed items:", items.map(i => i.type).join(", "));
 
@@ -364,40 +377,75 @@ const handlers: Record<string, CommandHandler> = {
         if (!fields.includes("UID")) fields.push("UID");
 
         // Fetch messages
-        console.log("[IMAP FETCH] Fetching messages with UIDs:", uids.slice(0, 10), uids.length > 10 ? `... (${uids.length} total)` : "");
-        const messages = await api.listMessages(
-            session.apiKey!,
-            session.selectedSender!.id,
-            folder.name,
-            { uids, fields }
-        );
-        console.log("[IMAP FETCH] Got", messages.length, "messages from API");
+        console.log("[IMAP FETCH] Fetching messages with UIDs:", uids);
+        console.log("[IMAP FETCH] Fields:", fields);
+        console.log("[IMAP FETCH] Sender ID:", session.selectedSender?.id);
+
+        if (!session.selectedSender) {
+            console.log("[IMAP FETCH] ERROR: No sender selected!");
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "No sender selected",
+            }];
+        }
+
+        let messages;
+        try {
+            messages = await api.listMessages(
+                session.apiKey!,
+                session.selectedSender.id,
+                folder.name,
+                { uids, fields }
+            );
+            console.log("[IMAP FETCH] Got", messages.length, "messages from API");
+            if (messages.length > 0) {
+                console.log("[IMAP FETCH] First message:", JSON.stringify(messages[0]).slice(0, 500));
+            }
+        } catch (err) {
+            console.log("[IMAP FETCH] ERROR fetching messages:", err);
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Failed to fetch messages",
+            }];
+        }
 
         const responses: ImapResponse[] = [];
 
         for (const msg of messages) {
-            // Get body if needed
-            if (needsBody) {
-                const body = await api.getMessageBody(
-                    session.apiKey!,
-                    session.selectedSender!.id,
-                    msg.uid,
-                    folder.name,
-                    items.some(i => i.peek)
-                );
-                if (body) {
-                    (msg as any).body = body;
+            try {
+                // Get body if needed
+                if (needsBody) {
+                    const body = await api.getMessageBody(
+                        session.apiKey!,
+                        session.selectedSender.id,
+                        msg.uid,
+                        folder.name,
+                        items.some(i => i.peek)
+                    );
+                    if (body) {
+                        (msg as any).body = body;
+                    }
                 }
+
+                // Find sequence number
+                const seqNum = folder.messageUids.indexOf(msg.uid) + 1;
+                console.log("[IMAP FETCH] Formatting msg UID", msg.uid, "as seqNum", seqNum);
+
+                const formatted = formatFetchResponse(seqNum, msg, items);
+                console.log("[IMAP FETCH] Response:", formatted.slice(0, 200));
+
+                responses.push({
+                    type: "untagged",
+                    data: formatted,
+                });
+            } catch (err) {
+                console.log("[IMAP FETCH] ERROR formatting message:", msg.uid, err);
             }
-
-            // Find sequence number
-            const seqNum = folder.messageUids.indexOf(msg.uid) + 1;
-
-            responses.push({
-                type: "untagged",
-                data: formatFetchResponse(seqNum, msg, items),
-            });
         }
+
+        console.log("[IMAP FETCH] Total responses:", responses.length);
 
         responses.push({
             tag: command.tag,
@@ -737,7 +785,9 @@ async function handleSelect(
     api: ImapApiClient,
     readOnly: boolean
 ): Promise<ImapResponse[]> {
+    console.log("[IMAP SELECT] === Starting SELECT ===");
     const [mailboxName] = command.args;
+    console.log("[IMAP SELECT] Mailbox:", mailboxName);
 
     if (!mailboxName) {
         return [{
@@ -749,8 +799,10 @@ async function handleSelect(
 
     // Resolve mailbox name
     const { senderId, folderName } = await resolveMailbox(session, mailboxName, api);
+    console.log("[IMAP SELECT] Resolved senderId:", senderId, "folderName:", folderName);
 
     if (!senderId) {
+        console.log("[IMAP SELECT] ERROR: Mailbox not found");
         return [{
             tag: command.tag,
             status: "NO",
@@ -759,11 +811,15 @@ async function handleSelect(
     }
 
     // Trigger sync first
+    console.log("[IMAP SELECT] Triggering sync...");
     await api.syncMailbox(session.apiKey!, senderId);
 
     // Get folder status
+    console.log("[IMAP SELECT] Getting folder status...");
     const status = await api.getFolderStatus(session.apiKey!, senderId, folderName);
+    console.log("[IMAP SELECT] Status:", status);
     if (!status) {
+        console.log("[IMAP SELECT] ERROR: Failed to get status");
         return [{
             tag: command.tag,
             status: "NO",
@@ -772,11 +828,13 @@ async function handleSelect(
     }
 
     // Get message UIDs
+    console.log("[IMAP SELECT] Getting message UIDs...");
     const messages = await api.listMessages(session.apiKey!, senderId, folderName, {
         fields: ["UID"],
         limit: 10000,
     });
     const messageUids = messages.map(m => m.uid).sort((a, b) => a - b);
+    console.log("[IMAP SELECT] Message UIDs:", messageUids);
 
     // Update session
     session.state = "selected";
