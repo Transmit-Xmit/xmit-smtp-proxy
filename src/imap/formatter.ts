@@ -81,7 +81,7 @@ export function formatFetchResponse(
                         label += `<${validStart}>`;
                     }
 
-                    parts.push(`${label} {${Buffer.byteLength(finalContent)}}\r\n${finalContent}`);
+                    parts.push(`${label} {${Buffer.byteLength(finalContent)}}\\r\\n${finalContent}`);
                 };
 
                 const baseLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
@@ -92,13 +92,10 @@ export function formatFetchResponse(
                     processContent(rfc822, baseLabel);
                 } else if (section === "HEADER") {
                     // All headers
-                    const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
-                    if (availableHeaders) {
-                        const headers = formatHeaders(availableHeaders);
-                        processContent(headers, baseLabel);
-                    } else {
-                        processContent("", baseLabel);
-                    }
+                    const rfc822 = buildRfc822Message(message);
+                    const headerEnd = rfc822.indexOf("\\r\\n\\r\\n");
+                    const headers = headerEnd !== -1 ? rfc822.slice(0, headerEnd + 4) : rfc822; // Keep the empty line
+                    processContent(headers, baseLabel);
                 } else if (section.startsWith("HEADER.FIELDS")) {
                     // Specific headers
                     const fieldMatch = section.match(/HEADER\.FIELDS\s*\(([^)]+)\)/i);
@@ -121,13 +118,26 @@ export function formatFetchResponse(
                         processContent("", `BODY[${item.section}]`);
                     }
                 } else if (section === "TEXT") {
-                    // Body text only
-                    const text = message.body?.text || message.body?.html || "";
+                    // Body text only (RFC: everything after the first empty line of the RFC822 message)
+                    const rfc822 = buildRfc822Message(message);
+                    const headerEnd = rfc822.indexOf("\\r\\n\\r\\n");
+                    const text = headerEnd !== -1 ? rfc822.slice(headerEnd + 4) : "";
                     processContent(text, baseLabel);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
-                    // MIME part number
-                    const content = message.body?.html || message.body?.text || "";
-                    processContent(content, baseLabel);
+                    // MIME part - simplistic fallback for now
+                    // TODO: Implement proper MIME structure traversal to find the exact part
+                    // For now, if they ask for "1" give text, "2" give html if multipart
+                    // This is hacky but better than nothing
+                    if (message.body?.text && message.body?.html) {
+                        if (section === "1") processContent(message.body.text, baseLabel);
+                        else if (section === "2") processContent(message.body.html, baseLabel);
+                        else processContent("", baseLabel);
+                    } else {
+                        // Single part, "1" is the whole text
+                        const content = message.body?.html || message.body?.text || "";
+                        if (section === "1") processContent(content, baseLabel);
+                        else processContent("", baseLabel);
+                    }
                 } else {
                     // Unknown section
                     processContent("", baseLabel);
@@ -180,37 +190,26 @@ export function formatFetchResponse(
  */
 function buildRfc822Message(message: MailboxMessage): string {
     const lines: string[] = [];
+    const boundary = "boundary_" + message.uid + "_" + Date.now().toString(36);
+    const hasText = !!message.body?.text;
+    const hasHtml = !!message.body?.html;
+    const isMultipart = hasText && hasHtml;
 
     // Add headers - prefer body.headers, fallback to envelope
-    if (message.body?.headers && Object.keys(message.body.headers).length > 0) {
-        for (const [key, value] of Object.entries(message.body.headers)) {
-            lines.push(`${key}: ${value}`);
-        }
-    } else if (message.envelope) {
-        // Build headers from envelope
-        if (message.envelope.date) lines.push(`Date: ${message.envelope.date}`);
-        if (message.envelope.subject) lines.push(`Subject: ${message.envelope.subject}`);
-        if (message.envelope.from?.length) {
-            const from = message.envelope.from[0];
-            const addr = from.name ? `${from.name} <${from.mailbox}@${from.host}>` : `${from.mailbox}@${from.host}`;
-            lines.push(`From: ${addr}`);
-        }
-        if (message.envelope.to?.length) {
-            const toAddrs = message.envelope.to.map(t =>
-                t.name ? `${t.name} <${t.mailbox}@${t.host}>` : `${t.mailbox}@${t.host}`
-            );
-            lines.push(`To: ${toAddrs.join(", ")}`);
-        }
-        if (message.envelope.messageId) lines.push(`Message-ID: <${message.envelope.messageId}>`);
+    const headers = message.body?.headers || (message.envelope ? buildHeadersFromEnvelope(message.envelope) : {}) || {};
+
+    for (const [key, value] of Object.entries(headers)) {
+        // Skip Content-Type if we are generating it
+        if (key.toLowerCase() === "content-type") continue;
+        lines.push(`${key}: ${value}`);
     }
 
     // Add content-type header
-    if (message.body?.html) {
+    if (isMultipart) {
+        lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    } else if (hasHtml) {
         lines.push("Content-Type: text/html; charset=utf-8");
-    } else if (message.body?.text) {
-        lines.push("Content-Type: text/plain; charset=utf-8");
     } else {
-        // Default content type for empty bodies
         lines.push("Content-Type: text/plain; charset=utf-8");
     }
 
@@ -218,14 +217,28 @@ function buildRfc822Message(message: MailboxMessage): string {
     lines.push("");
 
     // Add body content
-    if (message.body?.html) {
-        lines.push(message.body.html);
-    } else if (message.body?.text) {
-        lines.push(message.body.text);
-    }
-    // Empty body is valid - just headers + empty line
+    if (isMultipart) {
+        // Text part
+        lines.push(`--${boundary}`);
+        lines.push("Content-Type: text/plain; charset=utf-8");
+        lines.push("");
+        lines.push(message.body!.text || "");
 
-    return lines.join("\r\n");
+        // HTML part
+        lines.push(`--${boundary}`);
+        lines.push("Content-Type: text/html; charset=utf-8");
+        lines.push("");
+        lines.push(message.body!.html || "");
+
+        // End boundary
+        lines.push(`--${boundary}--`);
+    } else if (hasHtml) {
+        lines.push(message.body?.html || "");
+    } else {
+        lines.push(message.body?.text || "");
+    }
+
+    return lines.join("\\r\\n");
 }
 
 /**
