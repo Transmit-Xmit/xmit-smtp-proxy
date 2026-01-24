@@ -1,36 +1,49 @@
-# xmit-smtp
+# xmit-mail
 
-SMTP relay proxy for [Transmit](https://xmit.sh). Send emails via SMTP using your Transmit API key.
+SMTP & IMAP server for [Transmit](https://xmit.sh). Send and receive emails using your Transmit API key.
 
 ## Why?
 
-Some tools (Cronicle, WordPress, legacy apps) only support SMTP for sending email. This proxy accepts SMTP connections and forwards emails through Transmit's REST API.
+Some tools (Cronicle, WordPress, legacy apps, email clients) need SMTP/IMAP. This server:
+- **SMTP**: Accepts outgoing emails and forwards through Transmit's REST API
+- **IMAP**: Provides access to your mailbox (inbound emails) via standard email clients
 
 ```
-Your App ──SMTP──▶ xmit-smtp ──HTTP──▶ api.xmit.sh
+Your App ──SMTP──▶ xmit-mail ──HTTP──▶ api.xmit.sh
+Email Client ──IMAP──▶ xmit-mail ──HTTP──▶ api.xmit.sh
 ```
 
 ## Quick Start
 
 ### Hosted (Recommended)
 
-Use our hosted SMTP relay:
+Use our hosted mail server:
 
+**Outgoing Mail (SMTP)**
 ```
-Host: smtp.xmit.sh
+Host: mail.xmit.sh
 Port: 587
 User: api
 Pass: <your Transmit API key>
 TLS:  STARTTLS
 ```
 
+**Incoming Mail (IMAP)**
+```
+Host: mail.xmit.sh
+Port: 993
+User: <sender email> (e.g., support@acme.com)
+Pass: <your Transmit API key>
+TLS:  SSL/TLS
+```
+
 ### Self-Hosted
 
 1. Clone and install:
    ```bash
-   git clone https://github.com/xmit-co/xmit-smtp.git
-   cd xmit-smtp
-   npm install
+   git clone https://github.com/Transmit-Xmit/xmit-smtp-proxy.git xmit-mail
+   cd xmit-mail
+   pnpm install
    ```
 
 2. Configure environment:
@@ -53,10 +66,12 @@ TLS:  STARTTLS
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `587` | SMTP server port |
+| `SMTP_PORT` | `587` | SMTP server port |
+| `IMAP_PORT` | `993` | IMAP server port |
 | `API_BASE` | `https://api.xmit.sh` | Transmit API URL |
 | `TLS_KEY_PATH` | `/etc/letsencrypt/.../privkey.pem` | TLS private key |
 | `TLS_CERT_PATH` | `/etc/letsencrypt/.../fullchain.pem` | TLS certificate |
+| `IMAP_IDLE_TIMEOUT` | `1800000` | IMAP idle timeout in ms (30 min) |
 | `NODE_ENV` | `production` | Set to `development` to disable TLS |
 
 ## Usage Examples
@@ -136,48 +151,47 @@ swaks --to recipient@example.com \
 
 ## Features
 
-- **API Key Auth**: Use your Transmit API key as the SMTP password
+- **SMTP Relay**: Send emails via SMTP, forwarded through Transmit API
+- **IMAP Access**: Read your mailbox with any email client
+- **API Key Auth**: Use your Transmit API key as password
 - **Full Email Support**: HTML, plain text, attachments, CC, BCC, Reply-To
-- **TLS**: STARTTLS encryption
-- **Validation**: API key validated against Transmit
-- **Forwarding**: All emails sent through Transmit's API (billing, limits, tracking all work)
+- **TLS Encryption**: STARTTLS for SMTP, SSL/TLS for IMAP
+- **IMAP Extensions**: IDLE (push notifications), UIDPLUS, MOVE, SPECIAL-USE
 
 ## Deployment
 
-### AWS Lightsail
+### One-Line Deploy (Recommended)
+
+On a fresh Ubuntu 22.04 server (Lightsail, EC2, etc.):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Transmit-Xmit/xmit-smtp-proxy/main/deploy.sh | sudo bash
+```
+
+This will:
+- Install Node.js, pnpm, and PM2
+- Clone and build the application
+- Obtain TLS certificate via Let's Encrypt
+- Configure firewall (ports 587, 993, 80)
+- Start the service with PM2
+
+### Manual Deployment
 
 1. Create Ubuntu 22.04 instance ($5/mo)
-2. Open ports 587 (SMTP) and 22 (SSH)
-3. Point `smtp.xmit.sh` to the instance IP
-4. Install Node.js and certbot:
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt install -y nodejs certbot
-   npm install -g pm2
-   ```
-5. Get TLS certificate:
-   ```bash
-   sudo certbot certonly --standalone -d smtp.xmit.sh
-   ```
-6. Deploy:
-   ```bash
-   git clone https://github.com/xmit-co/xmit-smtp.git /opt/xmit-smtp
-   cd /opt/xmit-smtp
-   npm install
-   npm run build
-   pm2 start dist/index.js --name xmit-smtp
-   pm2 save && pm2 startup
-   ```
+2. Open ports 587 (SMTP), 993 (IMAP), and 22 (SSH)
+3. Point `mail.yourdomain.com` to the instance IP
+4. Run the deploy script or follow manual steps in `deploy.sh`
 
 ### Docker
 
 ```bash
-docker build -t xmit-smtp .
+docker build -t xmit-mail .
 docker run -d \
   -p 587:587 \
+  -p 993:993 \
   -e API_BASE=https://api.xmit.sh \
   -v /etc/letsencrypt:/etc/letsencrypt:ro \
-  xmit-smtp
+  xmit-mail
 ```
 
 ## Limits
