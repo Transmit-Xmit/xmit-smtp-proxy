@@ -47,8 +47,10 @@ export function formatFetchResponse(
                 parts.push(`RFC822.SIZE ${message.size}`);
                 break;
             case "ENVELOPE":
-                if (message.envelope) {
-                    parts.push(`ENVELOPE ${formatEnvelope(message.envelope)}`);
+                // Use envelope if available, or build from body headers
+                const envelope = message.envelope || buildEnvelopeFromHeaders(message.body?.headers, message.internalDate);
+                if (envelope) {
+                    parts.push(`ENVELOPE ${formatEnvelope(envelope)}`);
                 }
                 break;
             case "BODYSTRUCTURE":
@@ -237,6 +239,88 @@ function buildHeadersFromEnvelope(envelope: ImapEnvelope | undefined): Record<st
     }
 
     return Object.keys(headers).length > 0 ? headers : null;
+}
+
+/**
+ * Build envelope from message headers (reverse of buildHeadersFromEnvelope)
+ * Used when API returns body with headers but no envelope
+ */
+function buildEnvelopeFromHeaders(headers: Record<string, string> | undefined, internalDate?: string): ImapEnvelope | null {
+    if (!headers || Object.keys(headers).length === 0) return null;
+
+    const envelope: ImapEnvelope = {
+        date: headers["Date"] || headers["date"] || internalDate || null,
+        subject: headers["Subject"] || headers["subject"] || null,
+        from: parseAddressHeader(headers["From"] || headers["from"]),
+        sender: parseAddressHeader(headers["Sender"] || headers["sender"]),
+        replyTo: parseAddressHeader(headers["Reply-To"] || headers["reply-to"]),
+        to: parseAddressHeader(headers["To"] || headers["to"]),
+        cc: parseAddressHeader(headers["Cc"] || headers["cc"]),
+        bcc: parseAddressHeader(headers["Bcc"] || headers["bcc"]),
+        inReplyTo: headers["In-Reply-To"] || headers["in-reply-to"] || null,
+        messageId: extractMessageId(headers["Message-ID"] || headers["message-id"]),
+    };
+
+    // If sender not set, copy from
+    if (!envelope.sender) envelope.sender = envelope.from;
+    if (!envelope.replyTo) envelope.replyTo = envelope.from;
+
+    return envelope;
+}
+
+/**
+ * Parse email address header into ImapAddress array
+ * Handles formats like: "Name <email@domain.com>" or "email@domain.com"
+ */
+function parseAddressHeader(value: string | undefined): ImapAddress[] | null {
+    if (!value) return null;
+
+    const addresses: ImapAddress[] = [];
+
+    // Split by comma (handles multiple addresses)
+    const parts = value.split(/,\s*/);
+
+    for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+
+        // Try to parse "Name <email@domain>" format
+        const match = trimmed.match(/^(?:"?([^"<]*)"?\s*)?<([^>]+)>$/);
+        if (match) {
+            const [, name, email] = match;
+            const [mailbox, host] = email.split("@");
+            if (mailbox && host) {
+                addresses.push({
+                    name: name?.trim() || null,
+                    adl: null,
+                    mailbox,
+                    host,
+                });
+            }
+        } else if (trimmed.includes("@")) {
+            // Plain email address
+            const [mailbox, host] = trimmed.split("@");
+            if (mailbox && host) {
+                addresses.push({
+                    name: null,
+                    adl: null,
+                    mailbox,
+                    host,
+                });
+            }
+        }
+    }
+
+    return addresses.length > 0 ? addresses : null;
+}
+
+/**
+ * Extract message ID without angle brackets
+ */
+function extractMessageId(value: string | undefined): string | null {
+    if (!value) return null;
+    // Remove angle brackets if present
+    return value.replace(/^<|>$/g, "").trim() || null;
 }
 
 /**
