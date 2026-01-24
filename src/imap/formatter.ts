@@ -52,8 +52,11 @@ export function formatFetchResponse(
                 }
                 break;
             case "BODYSTRUCTURE":
+                console.log("[IMAP BODYSTRUCTURE] message.bodyStructure:", !!message.bodyStructure);
                 if (message.bodyStructure) {
-                    parts.push(`BODYSTRUCTURE ${formatBodyStructure(message.bodyStructure)}`);
+                    const bs = formatBodyStructure(message.bodyStructure);
+                    console.log("[IMAP BODYSTRUCTURE] Formatted:", bs.slice(0, 200));
+                    parts.push(`BODYSTRUCTURE ${bs}`);
                 }
                 break;
             case "BODY":
@@ -115,6 +118,7 @@ export function formatFetchResponse(
         }
     }
 
+    console.log(`[IMAP FETCH FORMAT] Parts for seqNum ${seqNum}:`, parts.map(p => p.slice(0, 100)));
     return `${seqNum} FETCH (${parts.join(" ")})`;
 }
 

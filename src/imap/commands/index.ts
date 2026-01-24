@@ -370,6 +370,7 @@ const handlers: Record<string, CommandHandler> = {
         const needsBody = items.some(i =>
             i.type === "BODY" || i.type === "RFC822" || i.type === "RFC822.TEXT"
         );
+        console.log("[IMAP FETCH] needsBody:", needsBody, "BODY items:", items.filter(i => i.type === "BODY").map(i => ({ section: i.section, peek: i.peek })));
 
         const fields = items.map(i => i.type).filter(t =>
             ["FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE"].includes(t)
@@ -417,6 +418,7 @@ const handlers: Record<string, CommandHandler> = {
             try {
                 // Get body if needed
                 if (needsBody) {
+                    console.log("[IMAP FETCH] Fetching body for UID:", msg.uid);
                     const body = await api.getMessageBody(
                         session.apiKey!,
                         session.selectedSender.id,
@@ -424,6 +426,7 @@ const handlers: Record<string, CommandHandler> = {
                         folder.name,
                         items.some(i => i.peek)
                     );
+                    console.log("[IMAP FETCH] Body result:", body ? { hasText: !!body.text, textLen: body.text?.length, hasHtml: !!body.html, htmlLen: body.html?.length, hasHeaders: !!body.headers } : "null");
                     if (body) {
                         (msg as any).body = body;
                     }
