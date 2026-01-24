@@ -57,22 +57,51 @@ export function formatFetchResponse(
                 }
                 break;
             case "BODY":
-                if (item.section === undefined || item.section === "") {
-                    // Full body
+                const section = item.section?.toUpperCase() || "";
+                const sectionLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
+
+                if (section === "" || section === undefined) {
+                    // Full body - return as RFC822 format
                     if (message.body) {
-                        const content = message.body.html || message.body.text || "";
-                        parts.push(`BODY[] {${content.length}}\r\n${content}`);
+                        const rfc822 = buildRfc822Message(message);
+                        parts.push(`${sectionLabel} {${rfc822.length}}\r\n${rfc822}`);
                     }
-                } else if (item.section?.toUpperCase() === "HEADER") {
-                    // Headers only
+                } else if (section === "HEADER") {
+                    // All headers
                     if (message.body?.headers) {
                         const headers = formatHeaders(message.body.headers);
-                        parts.push(`BODY[HEADER] {${headers.length}}\r\n${headers}`);
+                        parts.push(`${sectionLabel} {${headers.length}}\r\n${headers}`);
                     }
-                } else if (item.section?.toUpperCase() === "TEXT") {
+                } else if (section.startsWith("HEADER.FIELDS")) {
+                    // Specific headers - extract field names from (field1 field2)
+                    const fieldMatch = section.match(/HEADER\.FIELDS\s*\(([^)]+)\)/i);
+                    if (fieldMatch && message.body?.headers) {
+                        const requestedFields = fieldMatch[1].toLowerCase().split(/\s+/);
+                        const filteredHeaders: Record<string, string> = {};
+                        for (const [key, value] of Object.entries(message.body.headers)) {
+                            if (requestedFields.includes(key.toLowerCase())) {
+                                filteredHeaders[key] = value;
+                            }
+                        }
+                        const headers = formatHeaders(filteredHeaders);
+                        parts.push(`BODY[${item.section}] {${headers.length}}\r\n${headers}`);
+                    } else {
+                        // No matching headers
+                        parts.push(`BODY[${item.section}] {2}\r\n\r\n`);
+                    }
+                } else if (section === "TEXT") {
                     // Body text only
                     const text = message.body?.text || message.body?.html || "";
-                    parts.push(`BODY[TEXT] {${text.length}}\r\n${text}`);
+                    parts.push(`${sectionLabel} {${text.length}}\r\n${text}`);
+                } else if (/^\d+(\.\d+)*$/.test(section)) {
+                    // MIME part number (e.g., "1", "1.1", "2")
+                    // For now, return the HTML or text content
+                    const content = message.body?.html || message.body?.text || "";
+                    parts.push(`${sectionLabel} {${content.length}}\r\n${content}`);
+                } else {
+                    // Unknown section - return empty
+                    console.log(`[IMAP] Unknown BODY section: ${section}`);
+                    parts.push(`${sectionLabel} {0}\r\n`);
                 }
                 break;
             case "RFC822":
@@ -85,6 +114,55 @@ export function formatFetchResponse(
     }
 
     return `${seqNum} FETCH (${parts.join(" ")})`;
+}
+
+/**
+ * Build a simple RFC822 message from body data
+ */
+function buildRfc822Message(message: MailboxMessage): string {
+    const lines: string[] = [];
+
+    // Add headers if available
+    if (message.body?.headers) {
+        for (const [key, value] of Object.entries(message.body.headers)) {
+            lines.push(`${key}: ${value}`);
+        }
+    } else if (message.envelope) {
+        // Build minimal headers from envelope
+        if (message.envelope.date) lines.push(`Date: ${message.envelope.date}`);
+        if (message.envelope.subject) lines.push(`Subject: ${message.envelope.subject}`);
+        if (message.envelope.from?.length) {
+            const from = message.envelope.from[0];
+            const addr = from.name ? `${from.name} <${from.mailbox}@${from.host}>` : `${from.mailbox}@${from.host}`;
+            lines.push(`From: ${addr}`);
+        }
+        if (message.envelope.to?.length) {
+            const toAddrs = message.envelope.to.map(t =>
+                t.name ? `${t.name} <${t.mailbox}@${t.host}>` : `${t.mailbox}@${t.host}`
+            );
+            lines.push(`To: ${toAddrs.join(", ")}`);
+        }
+        if (message.envelope.messageId) lines.push(`Message-ID: <${message.envelope.messageId}>`);
+    }
+
+    // Add content-type header if we have HTML
+    if (message.body?.html) {
+        lines.push("Content-Type: text/html; charset=utf-8");
+    } else if (message.body?.text) {
+        lines.push("Content-Type: text/plain; charset=utf-8");
+    }
+
+    // Empty line separates headers from body
+    lines.push("");
+
+    // Add body
+    if (message.body?.html) {
+        lines.push(message.body.html);
+    } else if (message.body?.text) {
+        lines.push(message.body.text);
+    }
+
+    return lines.join("\r\n");
 }
 
 /**
