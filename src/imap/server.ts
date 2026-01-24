@@ -154,12 +154,17 @@ export function createImapServer(
                 buffer = buffer.slice(lineEnd + 2);
 
                 // Handle IDLE termination
-                if (session.idling && line.toUpperCase() === "DONE") {
-                    if (session.idleTimeout) {
-                        clearTimeout(session.idleTimeout);
+                if (line.toUpperCase() === "DONE") {
+                    if (session.idling) {
+                        if (session.idleTimeout) {
+                            clearTimeout(session.idleTimeout);
+                        }
+                        session.idling = false;
+                        socket.write(`${session.idleTag} OK IDLE terminated\r\n`);
+                    } else {
+                        // DONE received when not in IDLE - ignore silently
+                        logger.debug("imap", "DONE received but not in IDLE state");
                     }
-                    session.idling = false;
-                    socket.write(`${session.idleTag} OK IDLE terminated\r\n`);
                     continue;
                 }
 
@@ -258,7 +263,7 @@ export function createImapServer(
                         socket.end();
                     }
                 } catch (error) {
-                    logger.error("imap", `Command error: ${error}`);
+                    logger.error("imap", `Command error: ${error} | raw="${line}" | idling=${session.idling}`);
                     if (error instanceof Error) {
                         logger.error("imap", `Stack: ${error.stack}`);
                     }
