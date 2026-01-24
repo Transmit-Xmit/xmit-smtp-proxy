@@ -7,6 +7,11 @@ import tls from "tls";
 import fs from "fs";
 import crypto from "crypto";
 
+// Security limits
+const MAX_LINE_SIZE = 64 * 1024; // 64KB max command line
+const MAX_LITERAL_SIZE = 50 * 1024 * 1024; // 50MB max literal (attachment)
+const LITERAL_TIMEOUT_MS = 60 * 1000; // 60s timeout for literal collection
+
 import type { ServerConfig, Logger, ImapSession, ImapCommand, ImapResponse } from "../shared/types.js";
 import { ImapApiClient } from "./api-client.js";
 import { parseCommand } from "./parser.js";
@@ -71,13 +76,31 @@ export function createImapServer(
             command: string;
             size: number;
             collected: string;
+            timeout?: NodeJS.Timeout;
         } | null = null;
 
         socket.on("data", async (data) => {
             buffer += data.toString();
 
+            // Security: Check buffer size to prevent memory exhaustion
+            if (buffer.length > MAX_LINE_SIZE && !pendingLiteral) {
+                logger.warn("imap", `Command too long from ${session.remoteAddress}, closing`);
+                socket.write("* BAD Command line too long\r\n");
+                socket.end();
+                return;
+            }
+
             // Handle literal data collection
             if (pendingLiteral) {
+                // Clear and reset timeout on activity
+                if (pendingLiteral.timeout) {
+                    clearTimeout(pendingLiteral.timeout);
+                    pendingLiteral.timeout = setTimeout(() => {
+                        logger.warn("imap", `Literal timeout from ${session.remoteAddress}`);
+                        socket.write("* BAD Literal data timeout\r\n");
+                        socket.end();
+                    }, LITERAL_TIMEOUT_MS);
+                }
                 const remaining = pendingLiteral.size - pendingLiteral.collected.length;
                 const chunk = buffer.slice(0, remaining);
                 pendingLiteral.collected += chunk;
@@ -85,6 +108,11 @@ export function createImapServer(
 
                 // Check if we have all literal data
                 if (pendingLiteral.collected.length >= pendingLiteral.size) {
+                    // Clear timeout
+                    if (pendingLiteral.timeout) {
+                        clearTimeout(pendingLiteral.timeout);
+                    }
+
                     // Remove trailing CRLF after literal if present
                     if (buffer.startsWith("\r\n")) {
                         buffer = buffer.slice(2);
@@ -141,16 +169,30 @@ export function createImapServer(
                 const literalMatch = line.match(/\{(\d+)\}\s*$/);
                 if (literalMatch) {
                     const size = parseInt(literalMatch[1]);
+
+                    // Security: Check literal size limit
+                    if (size > MAX_LITERAL_SIZE) {
+                        logger.warn("imap", `Literal too large (${size} bytes) from ${session.remoteAddress}`);
+                        socket.write("* BAD Literal too large\r\n");
+                        continue;
+                    }
+
                     logger.debug("imap", `< Literal expected: ${size} bytes`);
 
                     // Send continuation response
                     socket.write("+ Ready for literal data\r\n");
 
-                    // Set up literal collection
+                    // Set up literal collection with timeout
                     pendingLiteral = {
                         command: line.replace(/\{(\d+)\}\s*$/, ""),
                         size,
                         collected: "",
+                        timeout: setTimeout(() => {
+                            logger.warn("imap", `Literal timeout from ${session.remoteAddress}`);
+                            pendingLiteral = null;
+                            socket.write("* BAD Literal data timeout\r\n");
+                            socket.end();
+                        }, LITERAL_TIMEOUT_MS),
                     };
 
                     // Process any data already in buffer

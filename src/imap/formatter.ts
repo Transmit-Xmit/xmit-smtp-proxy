@@ -105,9 +105,39 @@ export function formatFetchResponse(
                 break;
             case "RFC822":
                 if (message.body) {
-                    const content = message.body.html || message.body.text || "";
-                    parts.push(`RFC822 {${content.length}}\r\n${content}`);
+                    const rfc822 = buildRfc822Message(message);
+                    parts.push(`RFC822 {${rfc822.length}}\r\n${rfc822}`);
                 }
+                break;
+            case "RFC822.HEADER":
+                // Return just the headers (RFC 2822 format)
+                if (message.body?.headers) {
+                    const headers = formatHeaders(message.body.headers);
+                    parts.push(`RFC822.HEADER {${headers.length}}\r\n${headers}`);
+                } else if (message.envelope) {
+                    // Build minimal headers from envelope
+                    const minHeaders: Record<string, string> = {};
+                    if (message.envelope.date) minHeaders["Date"] = message.envelope.date;
+                    if (message.envelope.subject) minHeaders["Subject"] = message.envelope.subject;
+                    if (message.envelope.from?.length) {
+                        const from = message.envelope.from[0];
+                        minHeaders["From"] = from.name
+                            ? `${from.name} <${from.mailbox}@${from.host}>`
+                            : `${from.mailbox}@${from.host}`;
+                    }
+                    if (message.envelope.messageId) {
+                        minHeaders["Message-ID"] = `<${message.envelope.messageId}>`;
+                    }
+                    const headers = formatHeaders(minHeaders);
+                    parts.push(`RFC822.HEADER {${headers.length}}\r\n${headers}`);
+                } else {
+                    parts.push(`RFC822.HEADER {2}\r\n\r\n`);
+                }
+                break;
+            case "RFC822.TEXT":
+                // Return just the body text
+                const bodyText = message.body?.text || message.body?.html || "";
+                parts.push(`RFC822.TEXT {${bodyText.length}}\r\n${bodyText}`);
                 break;
         }
     }
@@ -225,8 +255,8 @@ function formatAddress(addr: ImapAddress): string {
  */
 function formatBodyStructure(struct: BodyStructure): string {
     if (struct.type.toLowerCase() === "multipart") {
-        // Multipart: (parts...) "subtype"
-        const parts = struct.parts?.map(formatBodyStructure).join("") || "";
+        // Multipart: (part1)(part2)... "subtype" - parts are space-separated per RFC 3501
+        const parts = struct.parts?.map(formatBodyStructure).join(" ") || "";
         return `(${parts} "${struct.subtype.toUpperCase()}")`;
     }
 
@@ -287,7 +317,23 @@ export function formatListResponse(
     flags: string[]
 ): string {
     const flagStr = flags.length > 0 ? `(${flags.join(" ")})` : "()";
-    return `LIST ${flagStr} "${delimiter}" "${name}"`;
+    // Escape special characters in folder name per RFC 3501
+    const escapedName = escapeImapString(name);
+    const escapedDelim = delimiter ? `"${delimiter}"` : "NIL";
+    return `LIST ${flagStr} ${escapedDelim} ${escapedName}`;
+}
+
+/**
+ * Escape a string for IMAP (handles quotes, backslashes, and uses literals for long/special strings)
+ */
+function escapeImapString(value: string): string {
+    // Use literal for strings with CR/LF or very long strings
+    if (/[\r\n]/.test(value) || value.length > 200) {
+        return `{${Buffer.byteLength(value)}}\r\n${value}`;
+    }
+    // Escape backslashes and quotes
+    const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `"${escaped}"`;
 }
 
 /**

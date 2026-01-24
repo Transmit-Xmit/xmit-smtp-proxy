@@ -830,7 +830,10 @@ const handlers: Record<string, CommandHandler> = {
         }
 
         const folder = session.selectedFolder!;
-        const { folderName: targetFolder } = await resolveMailbox(session, targetMailbox, api);
+        const { senderId, folderName: targetFolder } = await resolveMailbox(session, targetMailbox, api);
+
+        // Get target folder's UIDVALIDITY for COPYUID response
+        const targetStatus = await api.getFolderStatus(session.apiKey!, senderId || session.selectedSender!.id, targetFolder);
 
         // Resolve UIDs
         const uids = command.useUid
@@ -852,10 +855,13 @@ const handlers: Record<string, CommandHandler> = {
             if (newUid) newUids.push(newUid);
         }
 
+        // Use proper UIDVALIDITY from target folder (RFC 4315)
+        const uidValidity = targetStatus?.uidValidity || Date.now();
+
         return [{
             tag: command.tag,
             status: "OK",
-            code: newUids.length > 0 ? `COPYUID ${Date.now()} ${uids.join(",")} ${newUids.join(",")}` : undefined,
+            code: newUids.length > 0 ? `COPYUID ${uidValidity} ${uids.join(",")} ${newUids.join(",")}` : undefined,
             message: "COPY completed",
         }];
     },
@@ -872,7 +878,10 @@ const handlers: Record<string, CommandHandler> = {
         }
 
         const folder = session.selectedFolder!;
-        const { folderName: targetFolder } = await resolveMailbox(session, targetMailbox, api);
+        const { senderId, folderName: targetFolder } = await resolveMailbox(session, targetMailbox, api);
+
+        // Get target folder's UIDVALIDITY for COPYUID response
+        const targetStatus = await api.getFolderStatus(session.apiKey!, senderId || session.selectedSender!.id, targetFolder);
 
         // Resolve UIDs
         const uids = command.useUid
@@ -884,6 +893,8 @@ const handlers: Record<string, CommandHandler> = {
         const responses: ImapResponse[] = [];
         const newUids: number[] = [];
 
+        // Process moves and track sequence numbers correctly
+        // After each EXPUNGE, sequence numbers shift down
         for (const uid of uids) {
             const newUid = await api.moveMessage(
                 session.apiKey!,
@@ -896,22 +907,27 @@ const handlers: Record<string, CommandHandler> = {
             if (newUid) {
                 newUids.push(newUid);
 
-                // Remove from local cache
+                // Find current sequence number (changes after each removal)
                 const idx = folder.messageUids.indexOf(uid);
                 if (idx >= 0) {
-                    folder.messageUids.splice(idx, 1);
+                    // Send EXPUNGE with current sequence number
                     responses.push({
                         type: "untagged",
                         data: `${idx + 1} EXPUNGE`,
                     });
+                    // Remove from local cache - sequence numbers shift down
+                    folder.messageUids.splice(idx, 1);
                 }
             }
         }
 
+        // Use proper UIDVALIDITY from target folder (RFC 4315)
+        const uidValidity = targetStatus?.uidValidity || Date.now();
+
         responses.push({
             tag: command.tag,
             status: "OK",
-            code: newUids.length > 0 ? `COPYUID ${Date.now()} ${uids.join(",")} ${newUids.join(",")}` : undefined,
+            code: newUids.length > 0 ? `COPYUID ${uidValidity} ${uids.join(",")} ${newUids.join(",")}` : undefined,
             message: "MOVE completed",
         });
 
@@ -943,6 +959,8 @@ const handlers: Record<string, CommandHandler> = {
             m.flags?.some((f) => f.toLowerCase() === "\\deleted")
         );
 
+        // Process deletions and track sequence numbers correctly
+        // After each EXPUNGE, remaining sequence numbers shift down
         for (const msg of deletedMessages) {
             const success = await api.deleteMessage(
                 session.apiKey!,
@@ -953,15 +971,16 @@ const handlers: Record<string, CommandHandler> = {
             );
 
             if (success) {
-                // Find sequence number and send EXPUNGE response
-                const seqNum = folder.messageUids.indexOf(msg.uid) + 1;
-                if (seqNum > 0) {
-                    // Remove from local cache
-                    folder.messageUids.splice(seqNum - 1, 1);
+                // Find current sequence number (changes after each removal)
+                const idx = folder.messageUids.indexOf(msg.uid);
+                if (idx >= 0) {
+                    // Send EXPUNGE with current sequence number
                     responses.push({
                         type: "untagged",
-                        data: `${seqNum} EXPUNGE`,
+                        data: `${idx + 1} EXPUNGE`,
                     });
+                    // Remove from local cache - sequence numbers shift down
+                    folder.messageUids.splice(idx, 1);
                 }
             }
         }
@@ -1170,10 +1189,21 @@ async function handleSelect(
     ];
 
     // Only send UNSEEN if there are unseen messages (per RFC 3501)
-    if (status.unseen > 0) {
-        // Find the sequence number of first unseen message
-        // For now, we just indicate there are unseen messages
-        responses.push({ type: "untagged", data: `OK [UNSEEN 1] Messages start here` });
+    // UNSEEN indicates sequence number of first unseen message
+    if (status.unseen > 0 && messages.length > 0) {
+        // Find the first message without \Seen flag
+        let firstUnseenSeq = 0;
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            const isSeen = msg.flags?.some((f) => f.toLowerCase() === "\\seen");
+            if (!isSeen) {
+                firstUnseenSeq = i + 1; // Sequence numbers are 1-based
+                break;
+            }
+        }
+        if (firstUnseenSeq > 0) {
+            responses.push({ type: "untagged", data: `OK [UNSEEN ${firstUnseenSeq}] First unseen message` });
+        }
     }
 
     responses.push({
