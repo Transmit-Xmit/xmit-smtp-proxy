@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# xmit-smtp Deployment Script
+# xmit-mail Deployment Script (SMTP + IMAP)
 #
 # Idempotent setup for Ubuntu 22.04+ (Lightsail, EC2, etc.)
 # Re-running repairs/updates existing installation.
@@ -21,11 +21,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Defaults
-DEFAULT_DOMAIN="smtp.xmit.sh"
-DEFAULT_PORT="587"
+DEFAULT_DOMAIN="mail.xmit.sh"
+DEFAULT_SMTP_PORT="587"
+DEFAULT_IMAP_PORT="993"
 DEFAULT_API_BASE="https://api.xmit.sh"
 INSTALL_DIR="/opt/xmit-smtp"
 SERVICE_USER="xmit"
+SERVICE_NAME="xmit-mail"
 
 #------------------------------------------------------------------------------
 # Logging helpers
@@ -247,27 +249,29 @@ setup_tls() {
     log "TLS certificate obtained for $domain"
 
     # Setup auto-renewal hook to restart service
-    cat > /etc/letsencrypt/renewal-hooks/post/xmit-smtp.sh << 'EOF'
+    cat > /etc/letsencrypt/renewal-hooks/post/$SERVICE_NAME.sh << EOF
 #!/bin/bash
-pm2 restart xmit-smtp 2>/dev/null || true
+pm2 restart $SERVICE_NAME 2>/dev/null || true
 EOF
-    chmod +x /etc/letsencrypt/renewal-hooks/post/xmit-smtp.sh
+    chmod +x /etc/letsencrypt/renewal-hooks/post/$SERVICE_NAME.sh
 }
 
 #------------------------------------------------------------------------------
 # Configure firewall
 #------------------------------------------------------------------------------
 setup_firewall() {
-    local port="$1"
+    local smtp_port="$1"
+    local imap_port="$2"
 
     info "Configuring firewall..."
 
     ufw --force enable > /dev/null 2>&1
     ufw allow ssh > /dev/null 2>&1
-    ufw allow "$port/tcp" > /dev/null 2>&1
+    ufw allow "$smtp_port/tcp" > /dev/null 2>&1
+    ufw allow "$imap_port/tcp" > /dev/null 2>&1
     ufw allow 80/tcp > /dev/null 2>&1  # For cert renewals
 
-    log "Firewall configured (SSH, port $port, port 80)"
+    log "Firewall configured (SSH, SMTP:$smtp_port, IMAP:$imap_port, HTTP:80)"
 }
 
 #------------------------------------------------------------------------------
@@ -275,15 +279,17 @@ setup_firewall() {
 #------------------------------------------------------------------------------
 create_env() {
     local domain="$1"
-    local port="$2"
-    local api_base="$3"
+    local smtp_port="$2"
+    local imap_port="$3"
+    local api_base="$4"
     local env_file="$INSTALL_DIR/.env"
 
     info "Creating environment file..."
 
     cat > "$env_file" << EOF
-# xmit-smtp configuration
-PORT=$port
+# xmit-mail configuration (SMTP + IMAP)
+SMTP_PORT=$smtp_port
+IMAP_PORT=$imap_port
 API_BASE=$api_base
 TLS_KEY_PATH=/etc/letsencrypt/live/$domain/privkey.pem
 TLS_CERT_PATH=/etc/letsencrypt/live/$domain/fullchain.pem
@@ -300,12 +306,13 @@ EOF
 # Setup PM2 service
 #------------------------------------------------------------------------------
 setup_pm2() {
-    local port="$1"
+    local smtp_port="$1"
+    local imap_port="$2"
     cd "$INSTALL_DIR"
 
     # Create log directory
-    mkdir -p /var/log/xmit-smtp
-    chown "$SERVICE_USER":"$SERVICE_USER" /var/log/xmit-smtp
+    mkdir -p /var/log/$SERVICE_NAME
+    chown "$SERVICE_USER":"$SERVICE_USER" /var/log/$SERVICE_NAME
 
     # Give xmit user access to letsencrypt certs
     if [ -d /etc/letsencrypt/live ]; then
@@ -314,21 +321,23 @@ setup_pm2() {
     fi
 
     # Allow Node.js to bind to privileged ports (< 1024) without root
-    if [ "$port" -lt 1024 ]; then
-        info "Allowing Node.js to bind to port $port..."
-        NODE_PATH=$(which node)
+    NODE_PATH=$(which node)
+    if [ "$smtp_port" -lt 1024 ] || [ "$imap_port" -lt 1024 ]; then
+        info "Allowing Node.js to bind to privileged ports..."
         setcap 'cap_net_bind_service=+ep' "$NODE_PATH" 2>/dev/null || {
-            warn "Could not set capabilities on node. Port $port may not work."
-            warn "Consider using a port > 1024 or running as root."
+            warn "Could not set capabilities on node. Privileged ports may not work."
+            warn "Consider using ports > 1024 or running as root."
         }
     fi
 
     # Ownership
     chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
-    # Stop existing if running (as root, then as user)
+    # Stop existing if running (try both old and new names)
     pm2 delete xmit-smtp 2>/dev/null || true
+    pm2 delete $SERVICE_NAME 2>/dev/null || true
     sudo -u "$SERVICE_USER" pm2 delete xmit-smtp 2>/dev/null || true
+    sudo -u "$SERVICE_USER" pm2 delete $SERVICE_NAME 2>/dev/null || true
 
     info "Starting application with PM2..."
 
@@ -353,28 +362,43 @@ setup_pm2() {
 #------------------------------------------------------------------------------
 print_status() {
     local domain="$1"
-    local port="$2"
+    local smtp_port="$2"
+    local imap_port="$3"
 
     echo ""
     echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}  xmit-smtp deployment complete!${NC}"
+    echo -e "${GREEN}  xmit-mail deployment complete!${NC}"
     echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
     echo ""
-    echo "  SMTP Server: $domain:$port"
+    echo "  SMTP Server: $domain:$smtp_port"
+    echo "  IMAP Server: $domain:$imap_port"
     echo "  Install Dir: $INSTALL_DIR"
     echo "  Service:     pm2 (running as $SERVICE_USER)"
     echo ""
     echo "  Useful commands:"
     echo "    pm2 status              # Check service status"
-    echo "    pm2 logs xmit-smtp      # View logs"
-    echo "    pm2 restart xmit-smtp   # Restart service"
+    echo "    pm2 logs $SERVICE_NAME  # View logs"
+    echo "    pm2 restart $SERVICE_NAME  # Restart service"
     echo ""
-    echo "  Configure your email client:"
-    echo "    Host: $domain"
-    echo "    Port: $port"
-    echo "    User: api"
-    echo "    Pass: <your Transmit API key>"
-    echo "    TLS:  STARTTLS"
+    echo "  ┌─────────────────────────────────────────────────────────┐"
+    echo "  │  Email Client Configuration                            │"
+    echo "  ├─────────────────────────────────────────────────────────┤"
+    echo "  │                                                         │"
+    echo "  │  Incoming Mail (IMAP):                                  │"
+    echo "  │    Host:     $domain"
+    echo "  │    Port:     $imap_port"
+    echo "  │    Security: SSL/TLS"
+    echo "  │    Username: <sender email> (e.g. support@acme.com)"
+    echo "  │    Password: <your Transmit API key>"
+    echo "  │                                                         │"
+    echo "  │  Outgoing Mail (SMTP):                                  │"
+    echo "  │    Host:     $domain"
+    echo "  │    Port:     $smtp_port"
+    echo "  │    Security: STARTTLS"
+    echo "  │    Username: api"
+    echo "  │    Password: <your Transmit API key>"
+    echo "  │                                                         │"
+    echo "  └─────────────────────────────────────────────────────────┘"
     echo ""
 }
 
@@ -383,11 +407,11 @@ print_status() {
 #------------------------------------------------------------------------------
 main() {
     echo ""
-    echo -e "${BLUE}╔═══════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                                                   ║${NC}"
-    echo -e "${BLUE}║   xmit-smtp Deployment Script                     ║${NC}"
-    echo -e "${BLUE}║                                                   ║${NC}"
-    echo -e "${BLUE}╚═══════════════════════════════════════════════════╝${NC}"
+    echo -e "${BLUE}╔═══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║                                                       ║${NC}"
+    echo -e "${BLUE}║   xmit-mail Deployment Script (SMTP + IMAP)           ║${NC}"
+    echo -e "${BLUE}║                                                       ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════════════╝${NC}"
     echo ""
 
     check_root
@@ -398,15 +422,17 @@ main() {
     echo "  Leave blank for defaults, or enter custom values."
     echo ""
 
-    prompt DOMAIN "SMTP domain" "$DEFAULT_DOMAIN"
-    prompt PORT "SMTP port" "$DEFAULT_PORT"
+    prompt DOMAIN "Mail domain" "$DEFAULT_DOMAIN"
+    prompt SMTP_PORT "SMTP port" "$DEFAULT_SMTP_PORT"
+    prompt IMAP_PORT "IMAP port" "$DEFAULT_IMAP_PORT"
     prompt API_BASE "Transmit API URL" "$DEFAULT_API_BASE"
 
     echo ""
     info "Will deploy with:"
-    echo "  Domain:   $DOMAIN"
-    echo "  Port:     $PORT"
-    echo "  API:      $API_BASE"
+    echo "  Domain:    $DOMAIN"
+    echo "  SMTP Port: $SMTP_PORT"
+    echo "  IMAP Port: $IMAP_PORT"
+    echo "  API:       $API_BASE"
     echo ""
 
     read -p "Continue? [Y/n] " -n 1 -r
@@ -424,11 +450,11 @@ main() {
     setup_repo
     build_app
     setup_tls "$DOMAIN"
-    setup_firewall "$PORT"
-    create_env "$DOMAIN" "$PORT" "$API_BASE"
-    setup_pm2 "$PORT"
+    setup_firewall "$SMTP_PORT" "$IMAP_PORT"
+    create_env "$DOMAIN" "$SMTP_PORT" "$IMAP_PORT" "$API_BASE"
+    setup_pm2 "$SMTP_PORT" "$IMAP_PORT"
 
-    print_status "$DOMAIN" "$PORT"
+    print_status "$DOMAIN" "$SMTP_PORT" "$IMAP_PORT"
 }
 
 # Run main
