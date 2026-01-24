@@ -734,23 +734,47 @@ async function handleSelect(
     return responses;
 }
 
+/**
+ * Map client-specific folder names to our canonical names
+ * Different email clients use different names for special folders
+ */
+const FOLDER_ALIASES: Record<string, string> = {
+    // Apple Mail
+    "Sent Messages": "Sent",
+    "Deleted Messages": "Trash",
+    // Outlook
+    "Deleted Items": "Trash",
+    "Junk E-mail": "Junk",
+    // Gmail
+    "[Gmail]/Sent Mail": "Sent",
+    "[Gmail]/Trash": "Trash",
+    "[Gmail]/Drafts": "Drafts",
+};
+
+function normalizeFolderName(name: string): string {
+    return FOLDER_ALIASES[name] || name;
+}
+
 async function resolveMailbox(
     session: ImapSession,
     mailboxName: string,
     api: ImapApiClient
 ): Promise<{ senderId: string | null; folderName: string }> {
+    // Normalize folder name (handle client-specific names like "Sent Messages")
+    const normalizedName = normalizeFolderName(mailboxName);
+
     // If user logged in with specific sender, mailbox is just folder name
     if (session.selectedSender) {
         return {
             senderId: session.selectedSender.id,
-            folderName: mailboxName,
+            folderName: normalizedName,
         };
     }
 
     // Otherwise, mailbox might be "email/folder"
     if (mailboxName.includes("/")) {
         const [email, ...rest] = mailboxName.split("/");
-        const folderName = rest.join("/");
+        const folderName = normalizeFolderName(rest.join("/"));
 
         const sender = await api.getSenderByEmail(session.apiKey!, email);
         if (sender) {
@@ -762,12 +786,12 @@ async function resolveMailbox(
     const senders = await api.listSenders(session.apiKey!);
     for (const sender of senders) {
         const folders = await api.listFolders(session.apiKey!, sender.id);
-        if (folders.some(f => f.name === mailboxName)) {
-            return { senderId: sender.id, folderName: mailboxName };
+        if (folders.some(f => f.name === normalizedName)) {
+            return { senderId: sender.id, folderName: normalizedName };
         }
     }
 
-    return { senderId: null, folderName: mailboxName };
+    return { senderId: null, folderName: normalizedName };
 }
 
 function matchesPattern(name: string, pattern: string): boolean {
