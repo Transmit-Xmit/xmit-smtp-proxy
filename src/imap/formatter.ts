@@ -81,7 +81,7 @@ export function formatFetchResponse(
                         label += `<${validStart}>`;
                     }
 
-                    parts.push(`${label} {${Buffer.byteLength(finalContent)}}\\r\\n${finalContent}`);
+                    parts.push(`${label} {${Buffer.byteLength(finalContent)}}\r\n${finalContent}`);
                 };
 
                 const baseLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
@@ -93,7 +93,7 @@ export function formatFetchResponse(
                 } else if (section === "HEADER") {
                     // All headers
                     const rfc822 = buildRfc822Message(message);
-                    const headerEnd = rfc822.indexOf("\\r\\n\\r\\n");
+                    const headerEnd = rfc822.indexOf("\r\n\r\n");
                     const headers = headerEnd !== -1 ? rfc822.slice(0, headerEnd + 4) : rfc822; // Keep the empty line
                     processContent(headers, baseLabel);
                 } else if (section.startsWith("HEADER.FIELDS")) {
@@ -120,7 +120,7 @@ export function formatFetchResponse(
                 } else if (section === "TEXT") {
                     // Body text only (RFC: everything after the first empty line of the RFC822 message)
                     const rfc822 = buildRfc822Message(message);
-                    const headerEnd = rfc822.indexOf("\\r\\n\\r\\n");
+                    const headerEnd = rfc822.indexOf("\r\n\r\n");
                     const text = headerEnd !== -1 ? rfc822.slice(headerEnd + 4) : "";
                     processContent(text, baseLabel);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
@@ -238,7 +238,7 @@ function buildRfc822Message(message: MailboxMessage): string {
         lines.push(message.body?.text || "");
     }
 
-    return lines.join("\\r\\n");
+    return lines.join("\r\n");
 }
 
 /**
