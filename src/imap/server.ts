@@ -243,8 +243,8 @@ export function createImapServer(
 
                 try {
                     const command = parseCommand(line);
-                    // Log full command for debugging SELECT issues
-                    if (command.name === "SELECT" || command.name === "EXAMINE") {
+                    // Log full command for debugging SELECT and FETCH issues
+                    if (command.name === "SELECT" || command.name === "EXAMINE" || command.name === "FETCH") {
                         logger.info("imap", `< ${command.tag} ${command.name} [${command.args.join("|")}] raw="${line}"`);
                     } else {
                         logger.info("imap", `< ${command.tag} ${command.name}`);
