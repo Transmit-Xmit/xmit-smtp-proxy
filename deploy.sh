@@ -99,6 +99,8 @@ install_dependencies() {
         ufw \
         acl \
         libcap2-bin \
+        build-essential \
+        python3 \
         > /dev/null 2>&1
 
     log "System dependencies installed"
@@ -206,6 +208,15 @@ build_app() {
 
     info "Installing dependencies..."
     pnpm install --frozen-lockfile > /dev/null 2>&1 || pnpm install > /dev/null 2>&1
+
+    # Build native modules (better-sqlite3 requires compilation)
+    info "Building native modules..."
+    cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 2>/dev/null && \
+        npm run build-release > /dev/null 2>&1 && \
+        cd "$INSTALL_DIR" || {
+        warn "Native module build skipped (may not be needed)"
+        cd "$INSTALL_DIR"
+    }
 
     info "Building application..."
     pnpm build
