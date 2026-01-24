@@ -797,12 +797,18 @@ async function handleSelect(
     const responses: ImapResponse[] = [
         { type: "untagged", data: `${status.exists} EXISTS` },
         { type: "untagged", data: `${status.recent} RECENT` },
-        { type: "untagged", data: `OK [UNSEEN ${status.unseen}] First unseen` },
-        { type: "untagged", data: `OK [UIDVALIDITY ${status.uidValidity}] UIDs valid` },
-        { type: "untagged", data: `OK [UIDNEXT ${status.uidNext}] Predicted next UID` },
         { type: "untagged", data: `FLAGS (${status.flags.join(" ")})` },
         { type: "untagged", data: `OK [PERMANENTFLAGS (${status.permanentFlags.join(" ")})]` },
+        { type: "untagged", data: `OK [UIDVALIDITY ${status.uidValidity}] UIDs valid` },
+        { type: "untagged", data: `OK [UIDNEXT ${status.uidNext}] Predicted next UID` },
     ];
+
+    // Only send UNSEEN if there are unseen messages (per RFC 3501)
+    if (status.unseen > 0) {
+        // Find the sequence number of first unseen message
+        // For now, we just indicate there are unseen messages
+        responses.push({ type: "untagged", data: `OK [UNSEEN 1] Messages start here` });
+    }
 
     responses.push({
         tag: command.tag,
