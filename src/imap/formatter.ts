@@ -63,10 +63,9 @@ export function formatFetchResponse(
 
                 if (section === "" || section === undefined) {
                     // Full body - return as RFC822 format
-                    if (message.body) {
-                        const rfc822 = buildRfc822Message(message);
-                        parts.push(`${sectionLabel} {${rfc822.length}}\r\n${rfc822}`);
-                    }
+                    // Always return something even if body is empty
+                    const rfc822 = buildRfc822Message(message);
+                    parts.push(`${sectionLabel} {${rfc822.length}}\r\n${rfc822}`);
                 } else if (section === "HEADER") {
                     // All headers - use body.headers or build from envelope
                     const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
@@ -161,13 +160,13 @@ export function formatFetchResponse(
 function buildRfc822Message(message: MailboxMessage): string {
     const lines: string[] = [];
 
-    // Add headers if available
-    if (message.body?.headers) {
+    // Add headers - prefer body.headers, fallback to envelope
+    if (message.body?.headers && Object.keys(message.body.headers).length > 0) {
         for (const [key, value] of Object.entries(message.body.headers)) {
             lines.push(`${key}: ${value}`);
         }
     } else if (message.envelope) {
-        // Build minimal headers from envelope
+        // Build headers from envelope
         if (message.envelope.date) lines.push(`Date: ${message.envelope.date}`);
         if (message.envelope.subject) lines.push(`Subject: ${message.envelope.subject}`);
         if (message.envelope.from?.length) {
@@ -184,22 +183,26 @@ function buildRfc822Message(message: MailboxMessage): string {
         if (message.envelope.messageId) lines.push(`Message-ID: <${message.envelope.messageId}>`);
     }
 
-    // Add content-type header if we have HTML
+    // Add content-type header
     if (message.body?.html) {
         lines.push("Content-Type: text/html; charset=utf-8");
     } else if (message.body?.text) {
+        lines.push("Content-Type: text/plain; charset=utf-8");
+    } else {
+        // Default content type for empty bodies
         lines.push("Content-Type: text/plain; charset=utf-8");
     }
 
     // Empty line separates headers from body
     lines.push("");
 
-    // Add body
+    // Add body content
     if (message.body?.html) {
         lines.push(message.body.html);
     } else if (message.body?.text) {
         lines.push(message.body.text);
     }
+    // Empty body is valid - just headers + empty line
 
     return lines.join("\r\n");
 }

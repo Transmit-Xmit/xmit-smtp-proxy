@@ -649,13 +649,27 @@ const handlers: Record<string, CommandHandler> = {
 
         // Determine what fields to request
         const needsBody = items.some(i =>
-            i.type === "BODY" || i.type === "RFC822" || i.type === "RFC822.TEXT"
+            i.type === "BODY" || i.type === "RFC822" || i.type === "RFC822.TEXT" || i.type === "RFC822.HEADER"
         );
+
+        // Check if any BODY section needs headers (HEADER, HEADER.FIELDS, or empty section)
+        const needsHeaders = items.some(i =>
+            i.type === "BODY" && (
+                !i.section ||
+                i.section.toUpperCase() === "HEADER" ||
+                i.section.toUpperCase().startsWith("HEADER.FIELDS")
+            )
+        ) || items.some(i => i.type === "RFC822.HEADER" || i.type === "RFC822");
 
         const fields = items.map(i => i.type).filter(t =>
             ["FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE"].includes(t)
         );
         if (!fields.includes("UID")) fields.push("UID");
+
+        // Always request ENVELOPE when we need headers to build from
+        if (needsHeaders && !fields.includes("ENVELOPE")) {
+            fields.push("ENVELOPE");
+        }
 
         if (!session.selectedSender) {
             return [{
