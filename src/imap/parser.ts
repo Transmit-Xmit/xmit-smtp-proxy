@@ -165,6 +165,8 @@ export function parseFetchItems(itemsStr: string): FetchItem[] {
             items.push({ type: "RFC822.SIZE" });
             items.push({ type: "ENVELOPE" });
             items.push({ type: "BODY" });
+        } else if (upper === "BODYSTRUCTURE") {
+            items.push({ type: "BODYSTRUCTURE" });
         } else if (upper.startsWith("BODY.PEEK")) {
             const item = parseBodyItem(part);
             item.peek = true;
