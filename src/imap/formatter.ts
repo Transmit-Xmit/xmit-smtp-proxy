@@ -194,18 +194,22 @@ function buildRfc822Message(message: MailboxMessage): string {
     const headers = message.body?.headers || buildHeadersFromEnvelope(message.envelope) || {};
 
     for (const [key, value] of Object.entries(headers)) {
-        // Skip Content-Type if we are generating it
-        if (key.toLowerCase() === "content-type") continue;
+        // Skip Content-Type and Content-Transfer-Encoding as we generate them
+        const lowerKey = key.toLowerCase();
+        if (lowerKey === "content-type" || lowerKey === "content-transfer-encoding") continue;
         lines.push(`${key}: ${value}`);
     }
 
-    // Add content-type header
+    // Add content headers
     if (isMultipart) {
         lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+        // Multipart itself doesn't usually have a transfer encoding, but parts do
     } else if (hasHtml) {
         lines.push("Content-Type: text/html; charset=utf-8");
+        lines.push("Content-Transfer-Encoding: 8bit");
     } else {
         lines.push("Content-Type: text/plain; charset=utf-8");
+        lines.push("Content-Transfer-Encoding: 8bit");
     }
 
     // Empty line separates headers from body
@@ -216,12 +220,14 @@ function buildRfc822Message(message: MailboxMessage): string {
         // Text part
         lines.push(`--${boundary}`);
         lines.push("Content-Type: text/plain; charset=utf-8");
+        lines.push("Content-Transfer-Encoding: 8bit");
         lines.push("");
         lines.push(ensureCrlf(message.body!.text || ""));
 
         // HTML part
         lines.push(`--${boundary}`);
         lines.push("Content-Type: text/html; charset=utf-8");
+        lines.push("Content-Transfer-Encoding: 8bit");
         lines.push("");
         lines.push(ensureCrlf(message.body!.html || ""));
 
