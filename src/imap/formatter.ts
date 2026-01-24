@@ -68,22 +68,32 @@ export function formatFetchResponse(
                         parts.push(`${sectionLabel} {${rfc822.length}}\r\n${rfc822}`);
                     }
                 } else if (section === "HEADER") {
-                    // All headers
-                    if (message.body?.headers) {
-                        const headers = formatHeaders(message.body.headers);
+                    // All headers - use body.headers or build from envelope
+                    const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
+                    if (availableHeaders) {
+                        const headers = formatHeaders(availableHeaders);
                         parts.push(`${sectionLabel} {${headers.length}}\r\n${headers}`);
+                    } else {
+                        parts.push(`${sectionLabel} {2}\r\n\r\n`);
                     }
                 } else if (section.startsWith("HEADER.FIELDS")) {
                     // Specific headers - extract field names from (field1 field2)
                     const fieldMatch = section.match(/HEADER\.FIELDS\s*\(([^)]+)\)/i);
-                    if (fieldMatch && message.body?.headers) {
+                    if (fieldMatch) {
                         const requestedFields = fieldMatch[1].toLowerCase().split(/\s+/);
+
+                        // Build headers from body.headers or envelope
+                        const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
                         const filteredHeaders: Record<string, string> = {};
-                        for (const [key, value] of Object.entries(message.body.headers)) {
-                            if (requestedFields.includes(key.toLowerCase())) {
-                                filteredHeaders[key] = value;
+
+                        if (availableHeaders) {
+                            for (const [key, value] of Object.entries(availableHeaders)) {
+                                if (requestedFields.includes(key.toLowerCase())) {
+                                    filteredHeaders[key] = value;
+                                }
                             }
                         }
+
                         const headers = formatHeaders(filteredHeaders);
                         parts.push(`BODY[${item.section}] {${headers.length}}\r\n${headers}`);
                     } else {
@@ -192,6 +202,50 @@ function buildRfc822Message(message: MailboxMessage): string {
     }
 
     return lines.join("\r\n");
+}
+
+/**
+ * Build headers from envelope data when body.headers is not available
+ */
+function buildHeadersFromEnvelope(envelope: ImapEnvelope | undefined): Record<string, string> | null {
+    if (!envelope) return null;
+
+    const headers: Record<string, string> = {};
+
+    if (envelope.date) headers["Date"] = envelope.date;
+    if (envelope.subject) headers["Subject"] = envelope.subject;
+    if (envelope.messageId) headers["Message-ID"] = `<${envelope.messageId}>`;
+    if (envelope.inReplyTo) headers["In-Reply-To"] = envelope.inReplyTo;
+
+    if (envelope.from?.length) {
+        headers["From"] = formatAddressForHeader(envelope.from);
+    }
+    if (envelope.to?.length) {
+        headers["To"] = formatAddressForHeader(envelope.to);
+    }
+    if (envelope.cc?.length) {
+        headers["Cc"] = formatAddressForHeader(envelope.cc);
+    }
+    if (envelope.bcc?.length) {
+        headers["Bcc"] = formatAddressForHeader(envelope.bcc);
+    }
+    if (envelope.replyTo?.length) {
+        headers["Reply-To"] = formatAddressForHeader(envelope.replyTo);
+    }
+
+    return Object.keys(headers).length > 0 ? headers : null;
+}
+
+/**
+ * Format address list for header value
+ */
+function formatAddressForHeader(addresses: ImapAddress[]): string {
+    return addresses.map(addr => {
+        if (addr.name) {
+            return `${addr.name} <${addr.mailbox}@${addr.host}>`;
+        }
+        return `${addr.mailbox}@${addr.host}`;
+    }).join(", ");
 }
 
 /**
