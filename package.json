@@ -24,7 +24,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Transmit-Xmit/xmit-smtp-proxy"
+    "url": "https://github.com/Transmit-Xmit/xmit-mail"
   },
   "dependencies": {
     "dotenv": "^17.2.3",

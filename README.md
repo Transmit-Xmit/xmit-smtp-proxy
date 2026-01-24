@@ -41,7 +41,7 @@ TLS:  SSL/TLS
 
 1. Clone and install:
    ```bash
-   git clone https://github.com/Transmit-Xmit/xmit-smtp-proxy.git xmit-mail
+   git clone https://github.com/Transmit-Xmit/xmit-mail.git
    cd xmit-mail
    pnpm install
    ```
@@ -165,7 +165,7 @@ swaks --to recipient@example.com \
 On a fresh Ubuntu 22.04 server (Lightsail, EC2, etc.):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Transmit-Xmit/xmit-smtp-proxy/main/deploy.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/Transmit-Xmit/xmit-mail/main/deploy.sh | sudo bash
 ```
 
 This will:
