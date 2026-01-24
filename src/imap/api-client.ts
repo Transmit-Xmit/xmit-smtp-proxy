@@ -220,6 +220,7 @@ export class ImapApiClient {
 
     /**
      * List messages in a folder
+     * Uses per-message caching for better hit rates across different field requests
      */
     async listMessages(
         apiKey: string,
@@ -227,29 +228,56 @@ export class ImapApiClient {
         folderName: string,
         options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
     ): Promise<MailboxMessage[]> {
-        // Build cache key including query params for accurate caching
-        const queryParts: string[] = [];
-        if (options.uids?.length) queryParts.push(`u:${options.uids.sort().join(",")}`);
-        if (options.fields?.length) queryParts.push(`f:${options.fields.sort().join(",")}`);
-        if (options.limit) queryParts.push(`l:${options.limit}`);
-        if (options.offset) queryParts.push(`o:${options.offset}`);
+        // For UID-specific queries, try to serve from per-message cache
+        if (this.cache && options.uids?.length && !options.limit && !options.offset) {
+            const cached: MailboxMessage[] = [];
+            const missingUids: number[] = [];
 
-        const key = queryParts.length > 0
-            ? cacheKey("messages", senderId, folderName, queryParts.join("|"))
-            : cacheKey("messages", senderId, folderName);
+            for (const uid of options.uids) {
+                const msgKey = cacheKey("msg", senderId, folderName, uid);
+                const msg = this.cache.memory.get(msgKey) as MailboxMessage | undefined;
+                if (msg) {
+                    cached.push(msg);
+                } else {
+                    missingUids.push(uid);
+                }
+            }
 
-        // Check cache
-        if (this.cache) {
-            const cached = this.cache.memory.get(key) as MailboxMessage[] | undefined;
-            if (cached) return cached;
+            // All UIDs found in cache
+            if (missingUids.length === 0) {
+                this.logger.debug("imap-api", `Cache hit: ${cached.length} messages from ${folderName}`);
+                return cached;
+            }
+
+            // Fetch only missing UIDs
+            if (cached.length > 0) {
+                this.logger.debug("imap-api", `Partial cache: ${cached.length} hit, ${missingUids.length} miss`);
+                const fetched = await this.fetchMessages(apiKey, senderId, folderName, missingUids);
+                return [...cached, ...fetched];
+            }
         }
 
+        // Full fetch (no UIDs specified, or first-time fetch)
+        return this.fetchMessages(apiKey, senderId, folderName, options.uids, options.limit, options.offset);
+    }
+
+    /**
+     * Internal: fetch messages from API and cache them individually
+     */
+    private async fetchMessages(
+        apiKey: string,
+        senderId: string,
+        folderName: string,
+        uids?: number[],
+        limit?: number,
+        offset?: number
+    ): Promise<MailboxMessage[]> {
         try {
             const params = new URLSearchParams();
-            if (options.uids?.length) params.set("uids", options.uids.join(","));
-            if (options.fields?.length) params.set("fields", options.fields.join(","));
-            if (options.limit) params.set("limit", options.limit.toString());
-            if (options.offset) params.set("offset", options.offset.toString());
+            if (uids?.length) params.set("uids", uids.join(","));
+            // Always fetch all fields for caching (API returns full objects anyway)
+            if (limit) params.set("limit", limit.toString());
+            if (offset) params.set("offset", offset.toString());
 
             const res = await this.fetch(
                 apiKey,
@@ -260,9 +288,14 @@ export class ImapApiClient {
             const data = await res.json() as { messages: MailboxMessage[] };
             const messages = data.messages || [];
 
-            // Cache results
-            if (this.cache && messages.length > 0) {
-                this.cache.memory.set(key, messages, CacheTtl.MESSAGES);
+            // Cache each message individually for better hit rates
+            if (this.cache) {
+                for (const msg of messages) {
+                    if (msg.uid) {
+                        const msgKey = cacheKey("msg", senderId, folderName, msg.uid);
+                        this.cache.memory.set(msgKey, msg, CacheTtl.MESSAGES);
+                    }
+                }
             }
 
             return messages;
