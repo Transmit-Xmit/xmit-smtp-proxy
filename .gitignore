@@ -31,3 +31,6 @@ Thumbs.db
 
 # Test coverage
 coverage/
+
+# Cache directory (SQLite cache for IMAP)
+.cache/

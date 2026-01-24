@@ -27,11 +27,13 @@
     "url": "https://github.com/Transmit-Xmit/xmit-mail"
   },
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "dotenv": "^17.2.3",
     "mailparser": "^3.7.1",
     "smtp-server": "^3.13.6"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^22.10.0",
     "@types/smtp-server": "^3.5.10",

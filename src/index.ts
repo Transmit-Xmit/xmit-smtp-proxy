@@ -15,10 +15,19 @@ import { TransmitClient } from "./shared/api-client.js";
 import { createSmtpServer } from "./smtp/server.js";
 import { createImapServer } from "./imap/server.js";
 import { ImapApiClient } from "./imap/api-client.js";
+import { CacheManager } from "./cache/index.js";
 
 // Load configuration
 const config = loadConfig();
 const logger = createLogger(config.devMode ? "debug" : "info");
+
+// Create cache manager for IMAP
+const cacheManager = new CacheManager({
+    logger,
+    cacheDir: process.env.CACHE_DIR,
+    maxMemoryMb: parseInt(process.env.CACHE_MEMORY_MB || "50", 10),
+    maxPersistentMb: parseInt(process.env.CACHE_PERSISTENT_MB || "500", 10),
+});
 
 // Create API clients
 const smtpApiClient = new TransmitClient({
@@ -34,6 +43,9 @@ const imapApiClient = new ImapApiClient({
     cacheTtl: config.apiKeyCacheTtl,
     logger,
 });
+
+// Connect cache to IMAP client
+imapApiClient.setCache(cacheManager);
 
 // Create and start SMTP server
 const smtpServer = createSmtpServer(config, smtpApiClient, logger);
@@ -77,10 +89,15 @@ Email client settings:
     Password: <your Transmit API key>
 `);
 
-// Periodic cache cleanup (every 10 minutes)
+// Log cache stats periodically (every 10 minutes)
 setInterval(() => {
     smtpApiClient.pruneCache();
     imapApiClient.pruneCache();
+
+    // Log cache stats
+    const stats = cacheManager.stats();
+    logger.info("cache", `Memory: ${stats.memory.entries} entries, ${(stats.memory.memory / 1024 / 1024).toFixed(1)}MB`);
+    logger.info("cache", `Persistent: ${stats.persistent.entries} entries, ${(stats.persistent.size / 1024 / 1024).toFixed(1)}MB`);
 }, 10 * 60 * 1000);
 
 // Graceful shutdown
@@ -91,12 +108,15 @@ function shutdown(signal: string) {
         new Promise<void>((resolve) => smtpServer.close(() => resolve())),
         new Promise<void>((resolve) => imapServer.close(() => resolve())),
     ]).then(() => {
+        // Close cache manager
+        cacheManager.close();
         logger.info("shutdown", "Servers closed");
         process.exit(0);
     });
 
     // Force exit after 10 seconds
     setTimeout(() => {
+        cacheManager.close();
         logger.warn("shutdown", "Forcing exit after timeout");
         process.exit(1);
     }, 10000);

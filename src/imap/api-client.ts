@@ -1,6 +1,6 @@
 /**
  * IMAP API Client
- * Extended TransmitClient with mailbox-specific methods
+ * Extended TransmitClient with mailbox-specific methods and caching
  */
 import type {
     Logger,
@@ -10,6 +10,7 @@ import type {
     Sender,
 } from "../shared/types.js";
 import { withRetry, withTimeout } from "../shared/retry.js";
+import { CacheManager, CacheTtl, cacheKey } from "../cache/index.js";
 
 export class ImapApiClient {
     private readonly apiBase: string;
@@ -17,6 +18,7 @@ export class ImapApiClient {
     private readonly logger: Logger;
     private readonly apiKeyCache: Map<string, { value: AuthResult; expires: number }>;
     private readonly cacheTtl: number;
+    private cache: CacheManager | null = null;
 
     constructor(options: {
         apiBase: string;
@@ -29,6 +31,13 @@ export class ImapApiClient {
         this.cacheTtl = options.cacheTtl;
         this.logger = options.logger;
         this.apiKeyCache = new Map();
+    }
+
+    /**
+     * Set the cache manager (called after initialization)
+     */
+    setCache(cache: CacheManager): void {
+        this.cache = cache;
     }
 
     /**
@@ -90,12 +99,28 @@ export class ImapApiClient {
      * Get sender by email address
      */
     async getSenderByEmail(apiKey: string, email: string): Promise<Sender | null> {
+        // Check cache
+        const key = cacheKey("sender", email.toLowerCase());
+        if (this.cache) {
+            const cached = this.cache.memory.get(key) as Sender | undefined;
+            if (cached) return cached;
+        }
+
         try {
             const res = await this.fetch(apiKey, `/api/mailbox/accounts`);
             if (!res.ok) return null;
 
             const data = await res.json() as { accounts: Sender[] };
-            return data.accounts?.find((s) => s.email.toLowerCase() === email.toLowerCase()) || null;
+            const sender = data.accounts?.find((s) => s.email.toLowerCase() === email.toLowerCase()) || null;
+
+            // Cache all senders
+            if (this.cache && data.accounts) {
+                for (const s of data.accounts) {
+                    this.cache.memory.set(cacheKey("sender", s.email.toLowerCase()), s, CacheTtl.SENDER);
+                }
+            }
+
+            return sender;
         } catch {
             return null;
         }
@@ -105,12 +130,29 @@ export class ImapApiClient {
      * List all senders (mailbox accounts)
      */
     async listSenders(apiKey: string): Promise<Sender[]> {
+        // Check cache
+        const key = cacheKey("senders", "all");
+        if (this.cache) {
+            const cached = this.cache.memory.get(key) as Sender[] | undefined;
+            if (cached) return cached;
+        }
+
         try {
             const res = await this.fetch(apiKey, `/api/mailbox/accounts`);
             if (!res.ok) return [];
 
             const data = await res.json() as { accounts: Sender[] };
-            return data.accounts || [];
+            const senders = data.accounts || [];
+
+            // Cache
+            if (this.cache && senders.length > 0) {
+                this.cache.memory.set(key, senders, CacheTtl.SENDER);
+                for (const s of senders) {
+                    this.cache.memory.set(cacheKey("sender", s.email.toLowerCase()), s, CacheTtl.SENDER);
+                }
+            }
+
+            return senders;
         } catch {
             return [];
         }
@@ -120,12 +162,26 @@ export class ImapApiClient {
      * List folders for a sender
      */
     async listFolders(apiKey: string, senderId: string): Promise<MailboxFolder[]> {
+        // Check cache
+        const key = cacheKey("folders", senderId);
+        if (this.cache) {
+            const cached = this.cache.memory.get(key) as MailboxFolder[] | undefined;
+            if (cached) return cached;
+        }
+
         try {
             const res = await this.fetch(apiKey, `/api/mailbox/${senderId}/folders`);
             if (!res.ok) return [];
 
             const data = await res.json() as { folders: MailboxFolder[] };
-            return data.folders || [];
+            const folders = data.folders || [];
+
+            // Cache
+            if (this.cache && folders.length > 0) {
+                this.cache.memory.set(key, folders, CacheTtl.FOLDERS);
+            }
+
+            return folders;
         } catch {
             return [];
         }
@@ -135,6 +191,13 @@ export class ImapApiClient {
      * Get folder status (for SELECT/STATUS)
      */
     async getFolderStatus(apiKey: string, senderId: string, folderName: string): Promise<FolderStatus | null> {
+        // Check cache
+        const key = cacheKey("status", senderId, folderName);
+        if (this.cache) {
+            const cached = this.cache.memory.get(key) as FolderStatus | undefined;
+            if (cached) return cached;
+        }
+
         try {
             const res = await this.fetch(
                 apiKey,
@@ -142,7 +205,14 @@ export class ImapApiClient {
             );
             if (!res.ok) return null;
 
-            return await res.json() as FolderStatus;
+            const status = await res.json() as FolderStatus;
+
+            // Cache
+            if (this.cache && status) {
+                this.cache.memory.set(key, status, CacheTtl.FOLDER_STATUS);
+            }
+
+            return status;
         } catch {
             return null;
         }
@@ -157,6 +227,15 @@ export class ImapApiClient {
         folderName: string,
         options: { uids?: number[]; fields?: string[]; limit?: number; offset?: number } = {}
     ): Promise<MailboxMessage[]> {
+        // Only cache full list (no filters) for consistency
+        const isCacheable = !options.uids?.length && !options.limit && !options.offset;
+        const key = cacheKey("messages", senderId, folderName);
+
+        if (isCacheable && this.cache) {
+            const cached = this.cache.memory.get(key) as MailboxMessage[] | undefined;
+            if (cached) return cached;
+        }
+
         try {
             const params = new URLSearchParams();
             if (options.uids?.length) params.set("uids", options.uids.join(","));
@@ -171,7 +250,14 @@ export class ImapApiClient {
             if (!res.ok) return [];
 
             const data = await res.json() as { messages: MailboxMessage[] };
-            return data.messages || [];
+            const messages = data.messages || [];
+
+            // Cache full list
+            if (isCacheable && this.cache && messages.length > 0) {
+                this.cache.memory.set(key, messages, CacheTtl.MESSAGES);
+            }
+
+            return messages;
         } catch {
             return [];
         }
@@ -186,6 +272,13 @@ export class ImapApiClient {
         uid: number,
         folderName: string
     ): Promise<MailboxMessage | null> {
+        // Check cache
+        const key = cacheKey("message", senderId, folderName, uid);
+        if (this.cache) {
+            const cached = this.cache.memory.get(key) as MailboxMessage | undefined;
+            if (cached) return cached;
+        }
+
         try {
             const res = await this.fetch(
                 apiKey,
@@ -194,14 +287,21 @@ export class ImapApiClient {
             if (!res.ok) return null;
 
             const data = await res.json() as { message: MailboxMessage };
-            return data.message || null;
+            const message = data.message || null;
+
+            // Cache
+            if (this.cache && message) {
+                this.cache.memory.set(key, message, CacheTtl.MESSAGES);
+            }
+
+            return message;
         } catch {
             return null;
         }
     }
 
     /**
-     * Get message body
+     * Get message body (uses persistent cache for large bodies)
      */
     async getMessageBody(
         apiKey: string,
@@ -210,6 +310,20 @@ export class ImapApiClient {
         folderName: string,
         peek: boolean = false
     ): Promise<{ text?: string; html?: string; headers?: Record<string, string> } | null> {
+        // Check persistent cache first (message bodies are immutable)
+        const key = cacheKey("body", senderId, folderName, uid);
+        if (this.cache) {
+            const cached = this.cache.persistent.getJson<{
+                text?: string;
+                html?: string;
+                headers?: Record<string, string>;
+            }>(key);
+            if (cached) {
+                this.logger.debug("imap-api", `Cache hit for body ${key}`);
+                return cached;
+            }
+        }
+
         try {
             const res = await this.fetch(
                 apiKey,
@@ -218,7 +332,15 @@ export class ImapApiClient {
             if (!res.ok) return null;
 
             const data = await res.json() as { body: any };
-            return data.body || null;
+            const body = data.body || null;
+
+            // Cache in persistent storage (bodies are immutable and can be large)
+            if (this.cache && body) {
+                this.cache.persistent.setJson(key, body, CacheTtl.MESSAGE_BODY);
+                this.logger.debug("imap-api", `Cached body ${key}`);
+            }
+
+            return body;
         } catch {
             return null;
         }
@@ -251,6 +373,13 @@ export class ImapApiClient {
             if (!res.ok) return null;
 
             const data = await res.json() as { flags: string[] };
+
+            // Invalidate message cache
+            if (this.cache) {
+                this.cache.memory.delete(cacheKey("message", senderId, folderName, uid));
+                this.cache.memory.delete(cacheKey("messages", senderId, folderName));
+            }
+
             return data.flags || [];
         } catch {
             return null;
@@ -284,6 +413,12 @@ export class ImapApiClient {
             if (!res.ok) return null;
 
             const data = await res.json() as { newUid: number };
+
+            // Invalidate target folder cache
+            if (this.cache) {
+                this.cache.invalidateFolder(senderId, targetFolder);
+            }
+
             return data.newUid;
         } catch {
             return null;
@@ -317,6 +452,13 @@ export class ImapApiClient {
             if (!res.ok) return null;
 
             const data = await res.json() as { newUid: number };
+
+            // Invalidate both folder caches
+            if (this.cache) {
+                this.cache.invalidateFolder(senderId, sourceFolder);
+                this.cache.invalidateFolder(senderId, targetFolder);
+            }
+
             return data.newUid;
         } catch {
             return null;
@@ -332,6 +474,7 @@ export class ImapApiClient {
         folderName: string,
         criteria: Array<{ type: string; value?: string | number }>
     ): Promise<number[]> {
+        // Searches are not cached (too dynamic)
         try {
             const res = await fetch(
                 `${this.apiBase}/api/mailbox/${senderId}/folders/${encodeURIComponent(folderName)}/search`,
@@ -370,6 +513,11 @@ export class ImapApiClient {
                     },
                 }
             );
+
+            // Invalidate all caches for this sender after sync
+            if (res.ok && this.cache) {
+                this.cache.invalidateSender(senderId);
+            }
 
             return res.ok;
         } catch {
@@ -428,6 +576,12 @@ export class ImapApiClient {
             }
 
             const data = await res.json() as { uid: number };
+
+            // Invalidate folder cache
+            if (this.cache) {
+                this.cache.invalidateFolder(senderId, folderName);
+            }
+
             return data;
         } catch (error) {
             this.logger.error("imap-api", `Append error: ${error}`);
@@ -457,6 +611,11 @@ export class ImapApiClient {
                 }
             );
 
+            // Invalidate folder list cache
+            if (res.ok && this.cache) {
+                this.cache.memory.delete(cacheKey("folders", senderId));
+            }
+
             return res.ok;
         } catch (error) {
             this.logger.error("imap-api", `Create folder error: ${error}`);
@@ -473,7 +632,7 @@ export class ImapApiClient {
         folderName: string
     ): Promise<boolean> {
         try {
-            // First get folder ID by name
+            // First get folder ID by name (use cache if available)
             const folders = await this.listFolders(apiKey, senderId);
             const folder = folders.find(f => f.name === folderName);
 
@@ -491,6 +650,12 @@ export class ImapApiClient {
                     },
                 }
             );
+
+            // Invalidate caches
+            if (res.ok && this.cache) {
+                this.cache.memory.delete(cacheKey("folders", senderId));
+                this.cache.invalidateFolder(senderId, folderName);
+            }
 
             return res.ok;
         } catch (error) {
@@ -521,6 +686,13 @@ export class ImapApiClient {
                 }
             );
 
+            // Invalidate caches
+            if (res.ok && this.cache) {
+                this.cache.invalidateMessage(senderId, folderName, uid);
+                this.cache.memory.delete(cacheKey("messages", senderId, folderName));
+                this.cache.memory.delete(cacheKey("status", senderId, folderName));
+            }
+
             return res.ok;
         } catch (error) {
             this.logger.error("imap-api", `Delete error: ${error}`);
@@ -543,6 +715,23 @@ export class ImapApiClient {
         }
 
         return pruned;
+    }
+
+    /**
+     * Get cache stats
+     */
+    getCacheStats(): {
+        apiKeys: number;
+        memory?: { entries: number; memory: number };
+        persistent?: { entries: number; size: number };
+    } {
+        const stats: any = { apiKeys: this.apiKeyCache.size };
+        if (this.cache) {
+            const s = this.cache.stats();
+            stats.memory = { entries: s.memory.entries, memory: s.memory.memory };
+            stats.persistent = { entries: s.persistent.entries, size: s.persistent.size };
+        }
+        return stats;
     }
 }
 
