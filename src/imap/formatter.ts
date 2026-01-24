@@ -61,29 +61,49 @@ export function formatFetchResponse(
                 break;
             case "BODY":
                 const section = item.section?.toUpperCase() || "";
-                const sectionLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
+
+                // Helper to process content with partial support
+                const processContent = (content: string, label: string) => {
+                    let finalContent = content;
+
+                    if (item.partial) {
+                        const buf = Buffer.from(content);
+                        const start = item.partial.start;
+                        const validStart = Math.min(start, buf.length);
+                        const length = item.partial.length;
+
+                        // Slice buffer
+                        const slice = buf.subarray(validStart, validStart + length);
+                        // Convert back to string (safe UTF-8, might insert replacement chars)
+                        finalContent = slice.toString();
+
+                        // Update label with origin
+                        label += `<${validStart}>`;
+                    }
+
+                    parts.push(`${label} {${Buffer.byteLength(finalContent)}}\r\n${finalContent}`);
+                };
+
+                const baseLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
 
                 if (section === "" || section === undefined) {
-                    // Full body - return as RFC822 format
-                    // Always return something even if body is empty
+                    // Full body
                     const rfc822 = buildRfc822Message(message);
-                    parts.push(`${sectionLabel} {${Buffer.byteLength(rfc822)}}\r\n${rfc822}`);
+                    processContent(rfc822, baseLabel);
                 } else if (section === "HEADER") {
-                    // All headers - use body.headers or build from envelope
+                    // All headers
                     const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
                     if (availableHeaders) {
                         const headers = formatHeaders(availableHeaders);
-                        parts.push(`${sectionLabel} {${Buffer.byteLength(headers)}}\r\n${headers}`);
+                        processContent(headers, baseLabel);
                     } else {
-                        parts.push(`${sectionLabel} {2}\r\n\r\n`);
+                        processContent("", baseLabel);
                     }
                 } else if (section.startsWith("HEADER.FIELDS")) {
-                    // Specific headers - extract field names from (field1 field2)
+                    // Specific headers
                     const fieldMatch = section.match(/HEADER\.FIELDS\s*\(([^)]+)\)/i);
                     if (fieldMatch) {
                         const requestedFields = fieldMatch[1].toLowerCase().split(/\s+/);
-
-                        // Build headers from body.headers or envelope
                         const availableHeaders = message.body?.headers || buildHeadersFromEnvelope(message.envelope);
                         const filteredHeaders: Record<string, string> = {};
 
@@ -96,22 +116,21 @@ export function formatFetchResponse(
                         }
 
                         const headers = formatHeaders(filteredHeaders);
-                        parts.push(`BODY[${item.section}] {${Buffer.byteLength(headers)}}\r\n${headers}`);
+                        processContent(headers, `BODY[${item.section}]`);
                     } else {
-                        // No matching headers
-                        parts.push(`BODY[${item.section}] {2}\r\n\r\n`);
+                        processContent("", `BODY[${item.section}]`);
                     }
                 } else if (section === "TEXT") {
                     // Body text only
                     const text = message.body?.text || message.body?.html || "";
-                    parts.push(`${sectionLabel} {${Buffer.byteLength(text)}}\r\n${text}`);
+                    processContent(text, baseLabel);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
-                    // MIME part number (e.g., "1", "1.1", "2")
+                    // MIME part number
                     const content = message.body?.html || message.body?.text || "";
-                    parts.push(`${sectionLabel} {${Buffer.byteLength(content)}}\r\n${content}`);
+                    processContent(content, baseLabel);
                 } else {
-                    // Unknown section - return empty
-                    parts.push(`${sectionLabel} {0}\r\n`);
+                    // Unknown section
+                    processContent("", baseLabel);
                 }
                 break;
             case "RFC822":

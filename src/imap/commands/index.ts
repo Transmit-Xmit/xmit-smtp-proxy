@@ -729,8 +729,9 @@ const handlers: Record<string, CommandHandler> = {
                     type: "untagged",
                     data: formatted,
                 });
-            } catch {
-                // Skip messages that fail to format
+            } catch (error) {
+                // Log formatting errors
+                console.error(`[imap] Error formatting message ${msg.uid}:`, error);
             }
         }
 
