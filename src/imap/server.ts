@@ -55,7 +55,9 @@ export function createImapServer(
         ? net.createServer()
         : tls.createServer(tlsOptions);
 
-    server.on("connection", (socket: net.Socket) => {
+    // For TLS server, use "secureConnection"; for plain server, use "connection"
+    const connectionEvent = config.devMode ? "connection" : "secureConnection";
+    server.on(connectionEvent, (socket: net.Socket) => {
         const session = createSession(socket.remoteAddress || "unknown");
         sessions.set(socket, session);
 
