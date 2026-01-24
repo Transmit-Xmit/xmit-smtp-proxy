@@ -52,17 +52,14 @@ export function formatFetchResponse(
                 }
                 break;
             case "BODYSTRUCTURE":
-                console.log("[IMAP BODYSTRUCTURE] message.bodyStructure:", !!message.bodyStructure);
                 if (message.bodyStructure) {
                     const bs = formatBodyStructure(message.bodyStructure);
-                    console.log("[IMAP BODYSTRUCTURE] Formatted:", bs.slice(0, 200));
                     parts.push(`BODYSTRUCTURE ${bs}`);
                 }
                 break;
             case "BODY":
                 const section = item.section?.toUpperCase() || "";
                 const sectionLabel = item.peek ? `BODY[${item.section || ""}]` : `BODY[${item.section || ""}]`;
-                console.log(`[IMAP BODY] Section: "${section}", peek: ${item.peek}, hasBody: ${!!message.body}`);
 
                 if (section === "" || section === undefined) {
                     // Full body - return as RFC822 format
@@ -99,13 +96,10 @@ export function formatFetchResponse(
                     parts.push(`${sectionLabel} {${text.length}}\r\n${text}`);
                 } else if (/^\d+(\.\d+)*$/.test(section)) {
                     // MIME part number (e.g., "1", "1.1", "2")
-                    console.log(`[IMAP BODY] MIME part ${section}, bodyHtml: ${message.body?.html?.length || 0}, bodyText: ${message.body?.text?.length || 0}`);
                     const content = message.body?.html || message.body?.text || "";
-                    console.log(`[IMAP BODY] Returning ${content.length} bytes for BODY[${item.section}]`);
                     parts.push(`${sectionLabel} {${content.length}}\r\n${content}`);
                 } else {
                     // Unknown section - return empty
-                    console.log(`[IMAP] Unknown BODY section: ${section}`);
                     parts.push(`${sectionLabel} {0}\r\n`);
                 }
                 break;
@@ -118,7 +112,6 @@ export function formatFetchResponse(
         }
     }
 
-    console.log(`[IMAP FETCH FORMAT] Parts for seqNum ${seqNum}:`, parts.map(p => p.slice(0, 100)));
     return `${seqNum} FETCH (${parts.join(" ")})`;
 }
 

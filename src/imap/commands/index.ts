@@ -107,11 +107,19 @@ const handlers: Record<string, CommandHandler> = {
     },
 
     NOOP: async (session, command) => {
-        // TODO: Send any pending untagged responses (EXISTS, EXPUNGE, etc.)
         return [{
             tag: command.tag,
             status: "OK",
             message: "NOOP completed",
+        }];
+    },
+
+    CHECK: async (session, command) => {
+        // CHECK requests a checkpoint - we treat it as a no-op
+        return [{
+            tag: command.tag,
+            status: "OK",
+            message: "CHECK completed",
         }];
     },
 
@@ -192,6 +200,90 @@ const handlers: Record<string, CommandHandler> = {
         }];
     },
 
+    AUTHENTICATE: async (session, command, api, socket) => {
+        const mechanism = command.args[0]?.toUpperCase();
+
+        if (mechanism !== "PLAIN") {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Only PLAIN authentication supported",
+            }];
+        }
+
+        // PLAIN auth can be inline or require continuation
+        // Format: base64(authzid\0authcid\0password)
+        let authData = command.args[1];
+
+        if (!authData) {
+            // Send continuation request and wait for data
+            // For now, return error - full implementation would need async handling
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "AUTHENTICATE PLAIN requires credentials. Use LOGIN instead.",
+            }];
+        }
+
+        // Decode base64
+        try {
+            const decoded = Buffer.from(authData, "base64").toString("utf-8");
+            const parts = decoded.split("\0");
+            // parts[0] = authzid (authorization id, usually empty)
+            // parts[1] = authcid (authentication id / username)
+            // parts[2] = password (API key)
+
+            const username = parts[1] || parts[0] || "";
+            const password = parts[2] || "";
+
+            if (!password || !isValidApiKeyFormat(password)) {
+                return [{
+                    tag: command.tag,
+                    status: "NO",
+                    code: "AUTHENTICATIONFAILED",
+                    message: "Invalid API key format",
+                }];
+            }
+
+            const authResult = await api.validateApiKey(password);
+            if (!authResult) {
+                return [{
+                    tag: command.tag,
+                    status: "NO",
+                    code: "AUTHENTICATIONFAILED",
+                    message: "Invalid API key",
+                }];
+            }
+
+            // Handle sender selection (same as LOGIN)
+            let selectedSender = undefined;
+            if (username && username !== "api" && username !== "*") {
+                const sender = await api.getSenderByEmail(password, username);
+                if (sender) {
+                    selectedSender = { id: sender.id, email: sender.email };
+                }
+            }
+
+            session.state = "authenticated";
+            session.apiKey = password;
+            session.workspaceId = authResult.workspaceId;
+            session.selectedSender = selectedSender;
+
+            return [{
+                tag: command.tag,
+                status: "OK",
+                message: "AUTHENTICATE completed",
+            }];
+        } catch {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                code: "AUTHENTICATIONFAILED",
+                message: "Invalid authentication data",
+            }];
+        }
+    },
+
     // Mailbox operations
     LIST: async (session, command, api) => {
         const [reference, pattern] = command.args;
@@ -244,6 +336,177 @@ const handlers: Record<string, CommandHandler> = {
         });
 
         return responses;
+    },
+
+    LSUB: async (session, command, api) => {
+        // LSUB lists subscribed folders - we treat all folders as subscribed
+        // Just delegate to LIST since we don't track subscriptions separately
+        const [reference, pattern] = command.args;
+        const responses: ImapResponse[] = [];
+
+        const senders = session.selectedSender
+            ? [session.selectedSender]
+            : await api.listSenders(session.apiKey!);
+
+        for (const sender of senders) {
+            const folders = await api.listFolders(session.apiKey!, sender.id);
+
+            for (const folder of folders) {
+                const fullName = session.selectedSender
+                    ? folder.name
+                    : `${sender.email}/${folder.name}`;
+
+                if (matchesPattern(fullName, pattern)) {
+                    responses.push({
+                        type: "untagged",
+                        data: `LSUB () "/" "${fullName}"`,
+                    });
+                }
+            }
+        }
+
+        responses.push({
+            tag: command.tag,
+            status: "OK",
+            message: "LSUB completed",
+        });
+
+        return responses;
+    },
+
+    CREATE: async (session, command, api) => {
+        const [mailboxName] = command.args;
+
+        if (!mailboxName) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "CREATE requires mailbox name",
+            }];
+        }
+
+        // Resolve sender for this mailbox
+        const { senderId, folderName } = await resolveMailbox(session, mailboxName, api);
+
+        if (!senderId) {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Cannot determine sender for mailbox",
+            }];
+        }
+
+        // Create folder via API
+        const created = await api.createFolder(session.apiKey!, senderId, folderName);
+
+        if (!created) {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Failed to create mailbox",
+            }];
+        }
+
+        return [{
+            tag: command.tag,
+            status: "OK",
+            message: "CREATE completed",
+        }];
+    },
+
+    DELETE: async (session, command, api) => {
+        const [mailboxName] = command.args;
+
+        if (!mailboxName) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "DELETE requires mailbox name",
+            }];
+        }
+
+        const { senderId, folderName } = await resolveMailbox(session, mailboxName, api);
+
+        if (!senderId) {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Mailbox not found",
+            }];
+        }
+
+        const deleted = await api.deleteFolder(session.apiKey!, senderId, folderName);
+
+        if (!deleted) {
+            return [{
+                tag: command.tag,
+                status: "NO",
+                message: "Cannot delete mailbox (may be a system folder or not empty)",
+            }];
+        }
+
+        return [{
+            tag: command.tag,
+            status: "OK",
+            message: "DELETE completed",
+        }];
+    },
+
+    RENAME: async (session, command, api) => {
+        const [oldName, newName] = command.args;
+
+        if (!oldName || !newName) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "RENAME requires old and new mailbox names",
+            }];
+        }
+
+        // For now, RENAME is not supported
+        return [{
+            tag: command.tag,
+            status: "NO",
+            message: "RENAME not supported",
+        }];
+    },
+
+    SUBSCRIBE: async (session, command) => {
+        // We treat all folders as subscribed, so this is a no-op
+        const [mailboxName] = command.args;
+
+        if (!mailboxName) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "SUBSCRIBE requires mailbox name",
+            }];
+        }
+
+        return [{
+            tag: command.tag,
+            status: "OK",
+            message: "SUBSCRIBE completed",
+        }];
+    },
+
+    UNSUBSCRIBE: async (session, command) => {
+        // We treat all folders as subscribed, so this is a no-op
+        const [mailboxName] = command.args;
+
+        if (!mailboxName) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "UNSUBSCRIBE requires mailbox name",
+            }];
+        }
+
+        return [{
+            tag: command.tag,
+            status: "OK",
+            message: "UNSUBSCRIBE completed",
+        }];
     },
 
     SELECT: async (session, command, api) => {
@@ -308,8 +571,34 @@ const handlers: Record<string, CommandHandler> = {
         ];
     },
 
-    CLOSE: async (session, command) => {
-        // Expunge deleted messages silently
+    CLOSE: async (session, command, api) => {
+        const folder = session.selectedFolder;
+
+        // Silently expunge deleted messages before closing
+        if (folder && session.selectedSender) {
+            const messages = await api.listMessages(
+                session.apiKey!,
+                session.selectedSender.id,
+                folder.name,
+                { fields: ["UID", "FLAGS"] }
+            );
+
+            // Find deleted messages (check flags array for \Deleted)
+            const deletedMessages = messages.filter((m) =>
+                m.flags?.some((f) => f.toLowerCase() === "\\deleted")
+            );
+
+            for (const msg of deletedMessages) {
+                await api.deleteMessage(
+                    session.apiKey!,
+                    session.selectedSender.id,
+                    msg.uid,
+                    folder.name,
+                    true
+                );
+            }
+        }
+
         session.state = "authenticated";
         session.selectedFolder = undefined;
 
@@ -322,14 +611,9 @@ const handlers: Record<string, CommandHandler> = {
 
     // Message operations
     FETCH: async (session, command, api) => {
-        console.log("[IMAP FETCH] === Starting FETCH ===");
-        console.log("[IMAP FETCH] Args:", command.args);
-        console.log("[IMAP FETCH] useUid:", command.useUid);
-
         const [sequenceSet, itemsStr] = command.args;
 
         if (!sequenceSet || !itemsStr) {
-            console.log("[IMAP FETCH] ERROR: Missing sequence set or items");
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -339,7 +623,6 @@ const handlers: Record<string, CommandHandler> = {
 
         const folder = session.selectedFolder;
         if (!folder) {
-            console.log("[IMAP FETCH] ERROR: No folder selected!");
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -347,9 +630,7 @@ const handlers: Record<string, CommandHandler> = {
             }];
         }
 
-        console.log("[IMAP FETCH] Folder:", folder.name, "UIDs:", folder.messageUids);
         const items = parseFetchItems(itemsStr);
-        console.log("[IMAP FETCH] Parsed items:", items.map(i => i.type).join(", "));
 
         // Resolve sequence numbers to UIDs
         const uids = command.useUid
@@ -370,20 +651,13 @@ const handlers: Record<string, CommandHandler> = {
         const needsBody = items.some(i =>
             i.type === "BODY" || i.type === "RFC822" || i.type === "RFC822.TEXT"
         );
-        console.log("[IMAP FETCH] needsBody:", needsBody, "BODY items:", items.filter(i => i.type === "BODY").map(i => ({ section: i.section, peek: i.peek })));
 
         const fields = items.map(i => i.type).filter(t =>
             ["FLAGS", "UID", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODYSTRUCTURE"].includes(t)
         );
         if (!fields.includes("UID")) fields.push("UID");
 
-        // Fetch messages
-        console.log("[IMAP FETCH] Fetching messages with UIDs:", uids);
-        console.log("[IMAP FETCH] Fields:", fields);
-        console.log("[IMAP FETCH] Sender ID:", session.selectedSender?.id);
-
         if (!session.selectedSender) {
-            console.log("[IMAP FETCH] ERROR: No sender selected!");
             return [{
                 tag: command.tag,
                 status: "BAD",
@@ -399,12 +673,7 @@ const handlers: Record<string, CommandHandler> = {
                 folder.name,
                 { uids, fields }
             );
-            console.log("[IMAP FETCH] Got", messages.length, "messages from API");
-            if (messages.length > 0) {
-                console.log("[IMAP FETCH] First message:", JSON.stringify(messages[0]).slice(0, 500));
-            }
-        } catch (err) {
-            console.log("[IMAP FETCH] ERROR fetching messages:", err);
+        } catch {
             return [{
                 tag: command.tag,
                 status: "NO",
@@ -418,7 +687,6 @@ const handlers: Record<string, CommandHandler> = {
             try {
                 // Get body if needed
                 if (needsBody) {
-                    console.log("[IMAP FETCH] Fetching body for UID:", msg.uid);
                     const body = await api.getMessageBody(
                         session.apiKey!,
                         session.selectedSender.id,
@@ -426,7 +694,6 @@ const handlers: Record<string, CommandHandler> = {
                         folder.name,
                         items.some(i => i.peek)
                     );
-                    console.log("[IMAP FETCH] Body result:", body ? { hasText: !!body.text, textLen: body.text?.length, hasHtml: !!body.html, htmlLen: body.html?.length, hasHeaders: !!body.headers } : "null");
                     if (body) {
                         (msg as any).body = body;
                     }
@@ -434,21 +701,16 @@ const handlers: Record<string, CommandHandler> = {
 
                 // Find sequence number
                 const seqNum = folder.messageUids.indexOf(msg.uid) + 1;
-                console.log("[IMAP FETCH] Formatting msg UID", msg.uid, "as seqNum", seqNum);
-
                 const formatted = formatFetchResponse(seqNum, msg, items);
-                console.log("[IMAP FETCH] Response:", formatted.slice(0, 200));
 
                 responses.push({
                     type: "untagged",
                     data: formatted,
                 });
-            } catch (err) {
-                console.log("[IMAP FETCH] ERROR formatting message:", msg.uid, err);
+            } catch {
+                // Skip messages that fail to format
             }
         }
-
-        console.log("[IMAP FETCH] Total responses:", responses.length);
 
         responses.push({
             tag: command.tag,
@@ -656,13 +918,61 @@ const handlers: Record<string, CommandHandler> = {
         return responses;
     },
 
-    EXPUNGE: async (session, command) => {
-        // TODO: Actually expunge deleted messages via API
-        return [{
+    EXPUNGE: async (session, command, api) => {
+        const folder = session.selectedFolder;
+        if (!folder || !session.selectedSender) {
+            return [{
+                tag: command.tag,
+                status: "BAD",
+                message: "No folder selected",
+            }];
+        }
+
+        const responses: ImapResponse[] = [];
+
+        // Get messages marked as deleted
+        const messages = await api.listMessages(
+            session.apiKey!,
+            session.selectedSender.id,
+            folder.name,
+            { fields: ["UID", "FLAGS"] }
+        );
+
+        // Find deleted messages (check flags array for \Deleted)
+        const deletedMessages = messages.filter((m) =>
+            m.flags?.some((f) => f.toLowerCase() === "\\deleted")
+        );
+
+        for (const msg of deletedMessages) {
+            const success = await api.deleteMessage(
+                session.apiKey!,
+                session.selectedSender.id,
+                msg.uid,
+                folder.name,
+                true // expunge
+            );
+
+            if (success) {
+                // Find sequence number and send EXPUNGE response
+                const seqNum = folder.messageUids.indexOf(msg.uid) + 1;
+                if (seqNum > 0) {
+                    // Remove from local cache
+                    folder.messageUids.splice(seqNum - 1, 1);
+                    responses.push({
+                        type: "untagged",
+                        data: `${seqNum} EXPUNGE`,
+                    });
+                }
+            }
+        }
+
+        responses.push({
             tag: command.tag,
             status: "OK",
             message: "EXPUNGE completed",
-        }];
+        });
+
+        return responses;
     },
 
     APPEND: async (session, command, api) => {
@@ -788,9 +1098,7 @@ async function handleSelect(
     api: ImapApiClient,
     readOnly: boolean
 ): Promise<ImapResponse[]> {
-    console.log("[IMAP SELECT] === Starting SELECT ===");
     const [mailboxName] = command.args;
-    console.log("[IMAP SELECT] Mailbox:", mailboxName);
 
     if (!mailboxName) {
         return [{
@@ -802,10 +1110,8 @@ async function handleSelect(
 
     // Resolve mailbox name
     const { senderId, folderName } = await resolveMailbox(session, mailboxName, api);
-    console.log("[IMAP SELECT] Resolved senderId:", senderId, "folderName:", folderName);
 
     if (!senderId) {
-        console.log("[IMAP SELECT] ERROR: Mailbox not found");
         return [{
             tag: command.tag,
             status: "NO",
@@ -814,15 +1120,11 @@ async function handleSelect(
     }
 
     // Trigger sync first
-    console.log("[IMAP SELECT] Triggering sync...");
     await api.syncMailbox(session.apiKey!, senderId);
 
     // Get folder status
-    console.log("[IMAP SELECT] Getting folder status...");
     const status = await api.getFolderStatus(session.apiKey!, senderId, folderName);
-    console.log("[IMAP SELECT] Status:", status);
     if (!status) {
-        console.log("[IMAP SELECT] ERROR: Failed to get status");
         return [{
             tag: command.tag,
             status: "NO",
@@ -831,13 +1133,11 @@ async function handleSelect(
     }
 
     // Get message UIDs
-    console.log("[IMAP SELECT] Getting message UIDs...");
     const messages = await api.listMessages(session.apiKey!, senderId, folderName, {
         fields: ["UID"],
         limit: 10000,
     });
     const messageUids = messages.map(m => m.uid).sort((a, b) => a - b);
-    console.log("[IMAP SELECT] Message UIDs:", messageUids);
 
     // Update session
     session.state = "selected";

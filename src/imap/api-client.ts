@@ -436,6 +436,99 @@ export class ImapApiClient {
     }
 
     /**
+     * Create a folder
+     */
+    async createFolder(
+        apiKey: string,
+        senderId: string,
+        folderName: string
+    ): Promise<boolean> {
+        try {
+            const res = await fetch(
+                `${this.apiBase}/api/mailbox/${senderId}/folders`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        "Content-Type": "application/json",
+                        "User-Agent": "xmit-imap/1.0",
+                    },
+                    body: JSON.stringify({ name: folderName }),
+                }
+            );
+
+            return res.ok;
+        } catch (error) {
+            this.logger.error("imap-api", `Create folder error: ${error}`);
+            return false;
+        }
+    }
+
+    /**
+     * Delete a folder
+     */
+    async deleteFolder(
+        apiKey: string,
+        senderId: string,
+        folderName: string
+    ): Promise<boolean> {
+        try {
+            // First get folder ID by name
+            const folders = await this.listFolders(apiKey, senderId);
+            const folder = folders.find(f => f.name === folderName);
+
+            if (!folder) {
+                return false;
+            }
+
+            const res = await fetch(
+                `${this.apiBase}/api/mailbox/${senderId}/folders/${folder.id}`,
+                {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        "User-Agent": "xmit-imap/1.0",
+                    },
+                }
+            );
+
+            return res.ok;
+        } catch (error) {
+            this.logger.error("imap-api", `Delete folder error: ${error}`);
+            return false;
+        }
+    }
+
+    /**
+     * Delete/expunge a message
+     */
+    async deleteMessage(
+        apiKey: string,
+        senderId: string,
+        uid: number,
+        folderName: string,
+        expunge: boolean = true
+    ): Promise<boolean> {
+        try {
+            const res = await fetch(
+                `${this.apiBase}/api/mailbox/${senderId}/messages/${uid}?folder=${encodeURIComponent(folderName)}&expunge=${expunge}`,
+                {
+                    method: "DELETE",
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        "User-Agent": "xmit-imap/1.0",
+                    },
+                }
+            );
+
+            return res.ok;
+        } catch (error) {
+            this.logger.error("imap-api", `Delete error: ${error}`);
+            return false;
+        }
+    }
+
+    /**
      * Prune expired cache entries
      */
     pruneCache(): number {
