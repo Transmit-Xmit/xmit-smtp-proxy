@@ -209,17 +209,42 @@ build_app() {
     info "Installing dependencies..."
     pnpm install --frozen-lockfile > /dev/null 2>&1 || pnpm install > /dev/null 2>&1
 
-    # Build native modules (better-sqlite3 requires compilation)
-    SQLITE_DIR=$(find node_modules/.pnpm -type d -name "better-sqlite3" -path "*/node_modules/better-sqlite3" 2>/dev/null | head -1)
-    if [ -n "$SQLITE_DIR" ] && [ -f "$SQLITE_DIR/binding.gyp" ]; then
-        info "Building native modules (better-sqlite3)..."
-        cd "$SQLITE_DIR"
-        if npm run build-release > /dev/null 2>&1; then
-            log "Native module built successfully"
+    # Rebuild native modules for this system (better-sqlite3 requires compilation)
+    # pnpm may download pre-built binaries that don't match Node version
+    info "Rebuilding native modules..."
+    if pnpm rebuild better-sqlite3 2>&1; then
+        log "Native modules rebuilt"
+    else
+        warn "pnpm rebuild failed, trying manual build..."
+
+        # Fallback: build manually
+        SQLITE_DIR=$(find node_modules/.pnpm -type d -name "better-sqlite3" -path "*/node_modules/better-sqlite3" 2>/dev/null | head -1)
+        if [ -n "$SQLITE_DIR" ] && [ -f "$SQLITE_DIR/binding.gyp" ]; then
+            info "Building better-sqlite3 from source..."
+            cd "$SQLITE_DIR"
+
+            if npm run build-release; then
+                if [ -f "build/Release/better_sqlite3.node" ]; then
+                    log "Native module built successfully"
+                else
+                    warn "Build reported success but binary not found"
+                fi
+            else
+                warn "Native module build failed - caching may not work"
+                warn "Ensure build-essential and python3 are installed"
+            fi
+            cd "$INSTALL_DIR"
         else
-            warn "Native module build failed - may need build-essential"
+            warn "better-sqlite3 not found - caching will not work"
         fi
-        cd "$INSTALL_DIR"
+    fi
+
+    # Verify native module exists
+    SQLITE_NODE=$(find node_modules/.pnpm -name "better_sqlite3.node" 2>/dev/null | head -1)
+    if [ -n "$SQLITE_NODE" ]; then
+        log "Native module verified: $SQLITE_NODE"
+    else
+        warn "WARNING: Native module not found - SQLite caching disabled"
     fi
 
     info "Building application..."
