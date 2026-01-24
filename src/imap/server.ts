@@ -255,7 +255,7 @@ export function createImapServer(
                     for (const response of responses) {
                         const formatted = formatResponse(response);
                         socket.write(formatted + "\r\n");
-                        logger.info("imap", `> ${formatted.slice(0, 80)}${formatted.length > 80 ? "..." : ""}`);
+                        logger.info("imap", `> ${formatted.slice(0, 200)}${formatted.length > 200 ? "..." : ""}`);
                     }
 
                     // Check for logout
