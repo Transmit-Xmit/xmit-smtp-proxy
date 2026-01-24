@@ -322,6 +322,7 @@ const handlers: Record<string, CommandHandler> = {
 
     // Message operations
     FETCH: async (session, command, api) => {
+        console.log("[IMAP FETCH] Starting FETCH command");
         const [sequenceSet, itemsStr] = command.args;
 
         if (!sequenceSet || !itemsStr) {
@@ -333,7 +334,9 @@ const handlers: Record<string, CommandHandler> = {
         }
 
         const folder = session.selectedFolder!;
+        console.log("[IMAP FETCH] Folder:", folder?.name, "UIDs in cache:", folder?.messageUids?.length);
         const items = parseFetchItems(itemsStr);
+        console.log("[IMAP FETCH] Parsed items:", items.map(i => i.type).join(", "));
 
         // Resolve sequence numbers to UIDs
         const uids = command.useUid
@@ -361,12 +364,14 @@ const handlers: Record<string, CommandHandler> = {
         if (!fields.includes("UID")) fields.push("UID");
 
         // Fetch messages
+        console.log("[IMAP FETCH] Fetching messages with UIDs:", uids.slice(0, 10), uids.length > 10 ? `... (${uids.length} total)` : "");
         const messages = await api.listMessages(
             session.apiKey!,
             session.selectedSender!.id,
             folder.name,
             { uids, fields }
         );
+        console.log("[IMAP FETCH] Got", messages.length, "messages from API");
 
         const responses: ImapResponse[] = [];
 

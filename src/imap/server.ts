@@ -196,14 +196,14 @@ export function createImapServer(
 
                 try {
                     const command = parseCommand(line);
-                    logger.debug("imap", `< ${command.tag} ${command.name}`);
+                    logger.info("imap", `< ${command.tag} ${command.name}`);
 
                     const responses = await handleCommand(session, command, apiClient, socket, config);
 
                     for (const response of responses) {
                         const formatted = formatResponse(response);
                         socket.write(formatted + "\r\n");
-                        logger.debug("imap", `> ${formatted.slice(0, 100)}${formatted.length > 100 ? "..." : ""}`);
+                        logger.info("imap", `> ${formatted.slice(0, 80)}${formatted.length > 80 ? "..." : ""}`);
                     }
 
                     // Check for logout
@@ -212,6 +212,9 @@ export function createImapServer(
                     }
                 } catch (error) {
                     logger.error("imap", `Command error: ${error}`);
+                    if (error instanceof Error) {
+                        logger.error("imap", `Stack: ${error.stack}`);
+                    }
                     socket.write(`* BAD ${error instanceof Error ? error.message : "Unknown error"}\r\n`);
                 }
             }
